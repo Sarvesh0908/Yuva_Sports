@@ -245,7 +245,7 @@ export function ReportsPage() {
             ॥ श्री गणेशाय नमः ॥
           </p>
           <h1 className="text-2xl sm:text-3xl font-black text-amber-700 font-marathi">
-            {mandal?.name_mr || 'श्री गणेश मित्र मंडळ'}
+            {mandal?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड'}
           </h1>
           <p className="text-xs text-slate-600 font-medium">
             {mandal?.address_mr} • नोंदणी क्र: {mandal?.registration_no}

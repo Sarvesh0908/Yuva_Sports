@@ -92,7 +92,7 @@ export function PublicVerifyReceiptPage() {
               required
               value={searchCode}
               onChange={(e) => setSearchCode(e.target.value)}
-              placeholder="पावती क्रमांक टाका (उदा. GM-2026-000001)..."
+              placeholder="पावती क्रमांक टाका (उदा. YUVA-2026-000001)..."
               className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-white text-xs font-mono font-bold outline-none focus:ring-2 focus:ring-amber-500"
             />
             <button

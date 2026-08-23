@@ -116,7 +116,7 @@ export function DonorsPage() {
   const handleDirectWhatsApp = (donor) => {
     const rawMobile = donor.mobile ? donor.mobile.replace(/\D/g, '') : '';
     const formatted = rawMobile.length === 10 ? `91${rawMobile}` : rawMobile;
-    const text = encodeURIComponent(`🙏 नमस्कार ${donor.name},\n\nश्री गणेश मित्र मंडळाच्या उपक्रमांमध्ये आपले स्वागत आहे.\nगणपती बाप्पा मोरया! 🚩`);
+    const text = encodeURIComponent(`🙏 नमस्कार ${donor.name},\n\nयुवा स्पोर्ट्स गणेशोत्सव मंडळाच्या उपक्रमांमध्ये आपले स्वागत आहे.\nगणपती बाप्पा मोरया! 🚩`);
     window.open(`https://wa.me/${formatted}?text=${text}`, '_blank');
   };
 

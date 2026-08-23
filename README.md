@@ -20,7 +20,7 @@
    - Autocomplete search by donor name, mobile number, or locality/peth.
    - Real-time display of previous contributions and lifetime donation totals.
    - Preset quick amount chips (₹101, ₹251, ₹501, ₹1,001, ₹2,100, ₹5,001, ₹11,000).
-   - Automatic unique receipt numbering (`GM-2026-000001`).
+   - Automatic unique receipt numbering (`YUVA-2026-000001`).
    - Celebratory confetti on successful collection!
 
 3. **Digital Receipt & WhatsApp Sharing**
@@ -202,9 +202,9 @@ When a vargani or donation receipt is generated, the system creates a formatted 
 ```text
 🙏 नमस्कार अमोल रमेश पाटील,
 
-श्री गणेश मित्र मंडळ गणेशोत्सवासाठी आपण दिलेल्या वर्गणी/देणगीबद्दल मनःपूर्वक धन्यवाद!
+युवा स्पोर्ट्स गणेशोत्सव मंडळ गणेशोत्सवासाठी आपण दिलेल्या वर्गणी/देणगीबद्दल मनःपूर्वक धन्यवाद!
 
-🧾 पावती क्र: GM-2026-000003
+🧾 पावती क्र: YUVA-2026-000003
 💰 रक्कम: ₹15,000
 📅 दिनांक: 20 ऑगस्ट 2026
 🎯 उद्देश: वार्षिक घरगुती वर्गणी

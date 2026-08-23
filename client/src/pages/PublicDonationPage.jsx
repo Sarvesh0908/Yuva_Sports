@@ -116,7 +116,7 @@ export function PublicDonationPage() {
           </div>
           <p className="text-sm font-bold text-amber-400">॥ श्री गणेशाय नमः ॥</p>
           <h1 className="text-3xl sm:text-4xl font-black text-white font-marathi">
-            {mandalInfo?.name_mr || 'श्री गणेश मित्र मंडळ'}
+            {mandalInfo?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड'}
           </h1>
           <p className="text-xs sm:text-sm text-slate-300 max-w-xl mx-auto">
             {mandalInfo?.address_mr} • नोंदणी क्र: {mandalInfo?.registration_no}

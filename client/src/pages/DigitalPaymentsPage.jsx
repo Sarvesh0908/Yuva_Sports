@@ -77,7 +77,7 @@ export function DigitalPaymentsPage() {
               ॥ श्री गणेशाय नमः ॥
             </p>
             <h3 className="text-2xl font-black text-amber-700 dark:text-amber-400 font-marathi">
-              {mandal?.name_mr || 'श्री गणेश मित्र मंडळ'}
+              {mandal?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड'}
             </h3>
             <p className="text-xs text-slate-500">
               {mandal?.address_mr}

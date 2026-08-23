@@ -8,7 +8,7 @@ export async function getSettings(req, res) {
     let { data: mandal, error } = await db.from('mandal_settings').select('*').limit(1).maybeSingle();
     throwIfError(error);
     if (!mandal) {
-      const created = await db.from('mandal_settings').insert({ name_mr: 'श्री गणेश मित्र मंडळ' }).select('*').single();
+      const created = await db.from('mandal_settings').insert({ name_mr: 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड' }).select('*').single();
       throwIfError(created.error);
       mandal = created.data;
     }

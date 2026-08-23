@@ -122,7 +122,7 @@ export function RegisterPage() {
               नवीन सभासद नोंदणी
             </h1>
             <p className="text-xs text-amber-200/80 font-medium">
-              {mandal?.name_mr || 'श्री गणेश मित्र मंडळ'}
+              {mandal?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड'}
             </p>
           </div>
 

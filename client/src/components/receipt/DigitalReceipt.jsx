@@ -179,7 +179,7 @@ export function DigitalReceipt({ receipt, mandal, receiptRef }) {
               {receipt.collector_name || 'खजिनदार / प्रतिनिधी'}
             </p>
             <p className="text-[9px] text-slate-500 uppercase font-semibold">
-              श्री गणेश मित्र मंडळ
+              युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड
             </p>
           </div>
         </div>
