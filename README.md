@@ -210,7 +210,7 @@ When a vargani or donation receipt is generated, the system creates a formatted 
 🎯 उद्देश: वार्षिक घरगुती वर्गणी
 
 🔗 आपली अधिकृत डिजिटल पावती येथे पहा:
-http://localhost:3000/verify-receipt/GM-2026-000003
+http://localhost:3000/verify-receipt/YUVA-2026-000003
 
 आपले सहकार्य आमच्यासाठी मोलाचे आहे.
 
@@ -228,7 +228,7 @@ Clicking **"WhatsApp वर पाठवा"** opens `https://wa.me/919823012345
 PORT=5000
 NODE_ENV=development
 JWT_SECRET=ganpati_bappa_morya_mandal_secure_jwt_secret_2026
-CLIENT_URL=http://localhost:3000
+CLIENT_URL=http://yuva-sports.onrender.com
 DATABASE_URL=./database/ganpati_mandal.sqlite
 
 # Optional: Supabase / PostgreSQL Migration
