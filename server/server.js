@@ -160,6 +160,14 @@ app.use(
 // ==================================================
 // HEALTH CHECK
 // ==================================================
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    name: 'Ganpati Mandal API Server',
+    name_mr: 'गणपती मंडळ व्यवस्थापन API',
+    time: new Date().toISOString()
+  });
+});
 
 app.get(
   '/api/health',
