@@ -1,10 +1,16 @@
 import 'dotenv/config';
+
 import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
 
 import apiRouter from './routes/api.js';
 import { ensureInitialSetup } from './database/db.js';
+
+
+// ==================================================
+// EXPRESS APP
+// ==================================================
 
 const app = express();
 
@@ -15,7 +21,7 @@ const PORT = process.env.PORT || 5000;
 // CORS CONFIGURATION
 // ==================================================
 
-// Local frontend URLs
+// Local development frontend URLs
 const defaultOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -24,11 +30,13 @@ const defaultOrigins = [
 ];
 
 
-// Production URLs from .env
+// Production frontend URLs can be added using:
 //
-// You can provide multiple URLs:
+// CLIENT_URL=https://your-app.vercel.app
 //
-// CLIENT_URL=https://abc.vercel.app,https://example.com
+// Multiple URLs:
+//
+// CLIENT_URL=https://app1.vercel.app,https://app2.vercel.app
 //
 const envOrigins = (process.env.CLIENT_URL || '')
   .split(',')
@@ -36,7 +44,7 @@ const envOrigins = (process.env.CLIENT_URL || '')
   .filter(Boolean);
 
 
-// Combine local + production URLs
+// Combine local + production origins
 const allowedOrigins = [
   ...new Set([
     ...defaultOrigins,
@@ -59,18 +67,16 @@ const corsOptions = {
 
   origin(origin, callback) {
 
+    // ----------------------------------------------
     // Allow requests without Origin header
-    // Example:
+    //
+    // Examples:
     // Postman
     // curl
     // server-to-server requests
+    // ----------------------------------------------
+
     if (!origin) {
-      return callback(null, true);
-    }
-
-
-    // Allow known frontend URLs
-    if (allowedOrigins.includes(origin)) {
 
       return callback(
         null,
@@ -80,15 +86,37 @@ const corsOptions = {
     }
 
 
+    // ----------------------------------------------
+    // Allow configured frontend
+    // ----------------------------------------------
+
+    if (
+      allowedOrigins.includes(origin)
+    ) {
+
+      return callback(
+        null,
+        true
+      );
+
+    }
+
+
+    // ----------------------------------------------
     // Block unknown origins
+    // ----------------------------------------------
+
     console.error(
       `CORS blocked origin: ${origin}`
     );
 
+
     return callback(
+
       new Error(
         `CORS blocked origin: ${origin}`
       )
+
     );
 
   },
@@ -114,23 +142,28 @@ const corsOptions = {
 
 
   optionsSuccessStatus: 204
+
 };
 
 
-// Apply CORS
+// Apply CORS middleware
 app.use(
   cors(corsOptions)
 );
 
 
 // ==================================================
-// GENERAL MIDDLEWARE
+// REQUEST LOGGER
 // ==================================================
 
 app.use(
   morgan('dev')
 );
 
+
+// ==================================================
+// BODY PARSERS
+// ==================================================
 
 app.use(
   express.json({
@@ -148,40 +181,67 @@ app.use(
 
 
 // ==================================================
-// API ROUTES
+// ROOT ROUTE
 // ==================================================
+//
+// Useful when opening the Render backend URL directly:
+//
+// https://your-api.onrender.com/
+//
 
-app.use(
-  '/api',
-  apiRouter
+app.get(
+  '/',
+  (req, res) => {
+
+    res.status(200).json({
+
+      success: true,
+
+      message:
+        'Yuva Sports Ganpati Mandal API is running',
+
+      api:
+        '/api',
+
+      health:
+        '/api/health',
+
+      environment:
+        process.env.NODE_ENV ||
+        'development',
+
+      timestamp:
+        new Date().toISOString()
+
+    });
+
+  }
 );
 
 
 // ==================================================
 // HEALTH CHECK
 // ==================================================
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    name: 'Ganpati Mandal API Server',
-    name_mr: 'गणपती मंडळ व्यवस्थापन API',
-    time: new Date().toISOString()
-  });
-});
 
 app.get(
   '/api/health',
   (req, res) => {
 
-    res.json({
+    res.status(200).json({
 
-      status: 'OK',
+      success: true,
+
+      status:
+        'OK',
 
       name:
         'Ganpati Mandal API Server',
 
       name_mr:
         'गणपती मंडळ व्यवस्थापन API',
+
+      database:
+        'Supabase PostgreSQL',
 
       time:
         new Date().toISOString()
@@ -193,20 +253,45 @@ app.get(
 
 
 // ==================================================
+// API ROUTES
+// ==================================================
+//
+// Existing routes become:
+//
+// /api/auth/...
+// /api/income/...
+// /api/expenses/...
+// /api/donors/...
+// etc.
+//
+
+app.use(
+  '/api',
+  apiRouter
+);
+
+
+// ==================================================
 // 404 HANDLER
 // ==================================================
+//
+// IMPORTANT:
+// Keep this AFTER all valid routes.
+//
 
 app.use(
   (req, res) => {
 
-    res.status(404).json({
+    res
+      .status(404)
+      .json({
 
-      success: false,
+        success: false,
 
-      message:
-        `Route not found: ${req.method} ${req.originalUrl}`
+        message:
+          `Route not found: ${req.method} ${req.originalUrl}`
 
-    });
+      });
 
   }
 );
@@ -215,6 +300,13 @@ app.use(
 // ==================================================
 // GLOBAL ERROR HANDLER
 // ==================================================
+//
+// IMPORTANT:
+// Express error middleware must contain
+// all four parameters:
+//
+// err, req, res, next
+//
 
 app.use(
   (err, req, res, next) => {
@@ -225,7 +317,10 @@ app.use(
     );
 
 
-    // CORS error
+    // ----------------------------------------------
+    // CORS errors
+    // ----------------------------------------------
+
     if (
       err.message &&
       err.message.startsWith(
@@ -246,6 +341,32 @@ app.use(
 
     }
 
+
+    // ----------------------------------------------
+    // Multer upload errors
+    // ----------------------------------------------
+
+    if (
+      err.name === 'MulterError'
+    ) {
+
+      return res
+        .status(400)
+        .json({
+
+          success: false,
+
+          message:
+            err.message
+
+        });
+
+    }
+
+
+    // ----------------------------------------------
+    // Other errors
+    // ----------------------------------------------
 
     return res
       .status(
@@ -274,15 +395,35 @@ async function startServer() {
   try {
 
     console.log(
-      'Initializing Supabase...'
+      '=========================================='
+    );
+
+    console.log(
+      'Initializing Yuva Sports Backend...'
+    );
+
+    console.log(
+      '=========================================='
     );
 
 
-    // Connect Supabase
-    // Create/check storage bucket
-    // Create initial settings/admin if required
+    // ----------------------------------------------
+    // Initialize Supabase
+    //
+    // This performs:
+    //
+    // 1. Supabase connection test
+    // 2. Storage bucket initialization
+    // 3. Mandal settings initialization
+    // 4. Initial administrator creation
+    // ----------------------------------------------
+
     await ensureInitialSetup();
 
+
+    // ----------------------------------------------
+    // Start Express
+    // ----------------------------------------------
 
     app.listen(
       PORT,
@@ -294,11 +435,40 @@ async function startServer() {
         );
 
         console.log(
-          `Ganpati Mandal API running on port ${PORT}`
+          'Yuva Sports Backend Started Successfully'
         );
 
         console.log(
-          `Health: http://localhost:${PORT}/api/health`
+          '=========================================='
+        );
+
+        console.log(
+          `Port: ${PORT}`
+        );
+
+
+        // Local URLs are useful during development
+        if (
+          process.env.NODE_ENV !==
+          'production'
+        ) {
+
+          console.log(
+            `Server: http://localhost:${PORT}`
+          );
+
+          console.log(
+            `Health: http://localhost:${PORT}/api/health`
+          );
+
+        }
+
+
+        console.log(
+          `Environment: ${
+            process.env.NODE_ENV ||
+            'development'
+          }`
         );
 
         console.log(
@@ -311,7 +481,18 @@ async function startServer() {
   } catch (error) {
 
     console.error(
-      'Failed to start server:',
+      '=========================================='
+    );
+
+    console.error(
+      'Failed to start Yuva Sports Backend'
+    );
+
+    console.error(
+      '=========================================='
+    );
+
+    console.error(
       error
     );
 
@@ -321,5 +502,43 @@ async function startServer() {
 
 }
 
+
+// ==================================================
+// UNHANDLED PROMISE REJECTION
+// ==================================================
+
+process.on(
+  'unhandledRejection',
+  (reason) => {
+
+    console.error(
+      'Unhandled Promise Rejection:',
+      reason
+    );
+
+  }
+);
+
+
+// ==================================================
+// UNCAUGHT EXCEPTION
+// ==================================================
+
+process.on(
+  'uncaughtException',
+  (error) => {
+
+    console.error(
+      'Uncaught Exception:',
+      error
+    );
+
+  }
+);
+
+
+// ==================================================
+// START APPLICATION
+// ==================================================
 
 startServer();
