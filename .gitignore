@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Frontend build
+client/dist/
+dist/
+
+# Environment variables
+.env
+client/.env
+server/.env
+
+# SQLite database
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
