@@ -1,4 +1,4 @@
-const BASE_URL = '/api';
+const BASE_URL = 'https://yuva-sports.onrender.com/api';
 
 export async function request(endpoint, options = {}) {
   const token = localStorage.getItem('ganpati_mandal_token');

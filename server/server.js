@@ -33,7 +33,7 @@ const defaultOrigins = [
 
 // Production frontend URLs can be added using:
 //
-CLIENT_URL='https://yuva-sports.vercel.app'
+//CLIENT_URL='https://yuva-sports.vercel.app'
 //
 // Multiple URLs:
 //
