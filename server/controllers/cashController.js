@@ -1,64 +1,36 @@
 import { db } from '../database/db.js';
 import { logAudit } from '../middleware/auditMiddleware.js';
+import { istDayBounds, sum, throwIfError } from '../utils/dbHelpers.js';
 
 export async function getCashSummary(req, res) {
   try {
-    const { date: targetDate = new Date().toISOString().split('T')[0] } = req.query;
+    const targetDate = req.query.date || new Date().toISOString().split('T')[0];
+    const { start, end } = istDayBounds(targetDate);
 
-    // 1. Get previous day closing cash as default opening cash
-    const prevReconciliation = await db.get(`
-      SELECT actual_closing 
-      FROM cash_reconciliation 
-      WHERE reconciliation_date < date(?) 
-      ORDER BY reconciliation_date DESC 
-      LIMIT 1
-    `, [targetDate]);
+    const { data: prev, error: prevError } = await db.from('cash_reconciliation').select('actual_closing').lt('reconciliation_date', targetDate).order('reconciliation_date', { ascending: false }).limit(1).maybeSingle();
+    throwIfError(prevError);
 
     let openingCash = 0;
-    if (prevReconciliation) {
-      openingCash = Number(prevReconciliation.actual_closing) || 0;
-    } else {
-      const mandal = await db.get('SELECT initial_opening_balance FROM mandal_settings LIMIT 1');
+    if (prev) openingCash = Number(prev.actual_closing) || 0;
+    else {
+      const { data: mandal, error } = await db.from('mandal_settings').select('initial_opening_balance').limit(1).maybeSingle();
+      throwIfError(error);
       openingCash = Number(mandal?.initial_opening_balance) || 0;
     }
 
-    // 2. Cash income on target date
-    const incomeRow = await db.get(`
-      SELECT COALESCE(SUM(amount), 0) as cash_income, COUNT(*) as count
-      FROM income_transactions
-      WHERE is_deleted = 0 AND payment_method = 'cash' AND date(created_at) = date(?)
-    `, [targetDate]);
+    const { data: incomeRows, error: incomeError } = await db.from('income_transactions').select('amount').eq('is_deleted', false).eq('payment_method', 'cash').gte('created_at', start).lt('created_at', end);
+    throwIfError(incomeError);
+    const { data: expenseRows, error: expenseError } = await db.from('expense_transactions').select('amount').eq('is_deleted', false).eq('payment_method', 'cash').in('status', ['approved', 'paid']).gte('created_at', start).lt('created_at', end);
+    throwIfError(expenseError);
 
-    // 3. Cash expense on target date (approved/paid)
-    const expenseRow = await db.get(`
-      SELECT COALESCE(SUM(amount), 0) as cash_expense, COUNT(*) as count
-      FROM expense_transactions
-      WHERE is_deleted = 0 AND payment_method = 'cash' AND status IN ('approved', 'paid') AND date(created_at) = date(?)
-    `, [targetDate]);
-
-    const cashIncome = Number(incomeRow.cash_income) || 0;
-    const cashExpense = Number(expenseRow.cash_expense) || 0;
+    const cashIncome = sum(incomeRows);
+    const cashExpense = sum(expenseRows);
     const expectedClosing = openingCash + cashIncome - cashExpense;
 
-    // 4. Check if reconciliation already recorded for today
-    const existingRec = await db.get(
-      'SELECT * FROM cash_reconciliation WHERE reconciliation_date = date(?)',
-      [targetDate]
-    );
+    const { data: existingRec, error: existingError } = await db.from('cash_reconciliation').select('*').eq('reconciliation_date', targetDate).maybeSingle();
+    throwIfError(existingError);
 
-    return res.json({
-      success: true,
-      data: {
-        date: targetDate,
-        openingCash,
-        cashIncome,
-        cashIncomeCount: incomeRow.count,
-        cashExpense,
-        cashExpenseCount: expenseRow.count,
-        expectedClosing,
-        existingReconciliation: existingRec || null
-      }
-    });
+    return res.json({ success: true, data: { date: targetDate, openingCash, cashIncome, cashIncomeCount: incomeRows?.length || 0, cashExpense, cashExpenseCount: expenseRows?.length || 0, expectedClosing, existingReconciliation: existingRec || null } });
   } catch (err) {
     console.error('getCashSummary error:', err);
     return res.status(500).json({ success: false, message: 'रोख ताळेबंद माहिती मिळवताना त्रुटी.' });
@@ -67,87 +39,26 @@ export async function getCashSummary(req, res) {
 
 export async function reconcileCash(req, res) {
   try {
-    const {
-      date: targetDate = new Date().toISOString().split('T')[0],
-      opening_cash,
-      cash_income,
-      cash_expense,
-      actual_closing,
-      notes = ''
-    } = req.body;
-
+    const { date: targetDate = new Date().toISOString().split('T')[0], opening_cash, cash_income, cash_expense, actual_closing, notes = '' } = req.body;
     const opCash = Number(opening_cash) || 0;
     const incCash = Number(cash_income) || 0;
     const expCash = Number(cash_expense) || 0;
     const actClosing = Number(actual_closing) || 0;
     const expClosing = opCash + incCash - expCash;
     const diff = actClosing - expClosing;
-
     const status = diff === 0 ? 'reconciled' : 'mismatch';
 
-    // Insert or update
-    const existing = await db.get('SELECT id FROM cash_reconciliation WHERE reconciliation_date = date(?)', [targetDate]);
+    const { data: savedRecord, error } = await db.from('cash_reconciliation').upsert({ reconciliation_date: targetDate, opening_cash: opCash, cash_income: incCash, cash_expense: expCash, expected_closing: expClosing, actual_closing: actClosing, difference: diff, status, notes: notes.trim(), verified_by_id: req.user.id, verified_by_name: req.user.name, created_at: new Date().toISOString() }, { onConflict: 'reconciliation_date' }).select('*').single();
+    throwIfError(error);
 
-    let recId;
-    if (existing) {
-      await db.run(`
-        UPDATE cash_reconciliation
-        SET opening_cash = ?, cash_income = ?, cash_expense = ?, expected_closing = ?,
-            actual_closing = ?, difference = ?, status = ?, notes = ?,
-            verified_by_id = ?, verified_by_name = ?, created_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [
-        opCash, incCash, expCash, expClosing, actClosing, diff, status, notes.trim(),
-        req.user.id, req.user.name, existing.id
-      ]);
-      recId = existing.id;
-    } else {
-      const resDb = await db.run(`
-        INSERT INTO cash_reconciliation (
-          reconciliation_date, opening_cash, cash_income, cash_expense,
-          expected_closing, actual_closing, difference, status, notes,
-          verified_by_id, verified_by_name
-        ) VALUES (date(?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        targetDate, opCash, incCash, expCash, expClosing, actClosing, diff, status, notes.trim(),
-        req.user.id, req.user.name
-      ]);
-      recId = resDb.lastID;
-    }
-
-    const savedRecord = await db.get('SELECT * FROM cash_reconciliation WHERE id = ?', [recId]);
-
-    // If mismatch, create notification
     if (diff !== 0) {
-      await db.run(`
-        INSERT INTO notifications (user_id, title_mr, title_en, message_mr, message_en, type, link)
-        VALUES (NULL, 'रोख ताळेबंद तफावत अलर्ट', 'Cash Discrepancy Alert', ?, ?, 'error', '/cash-management')
-      `, [
-        `दिनांक ${targetDate} च्या रोख ताळेबंदात ₹${Math.abs(diff).toLocaleString('en-IN')} ची तफावत आढळली.`,
-        `Cash mismatch of ₹${Math.abs(diff).toLocaleString('en-IN')} found on ${targetDate}.`
-      ]);
+      const { error: notificationError } = await db.from('notifications').insert({ user_id: null, title_mr: 'रोख ताळेबंद तफावत अलर्ट', title_en: 'Cash Discrepancy Alert', message_mr: `दिनांक ${targetDate} च्या रोख ताळेबंदात ₹${Math.abs(diff).toLocaleString('en-IN')} ची तफावत आढळली.`, message_en: `Cash mismatch of ₹${Math.abs(diff).toLocaleString('en-IN')} found on ${targetDate}.`, type: 'error', link: '/cash-management' });
+      throwIfError(notificationError);
     }
 
-    await logAudit({
-      userId: req.user.id,
-      userName: req.user.name,
-      userRole: req.user.role,
-      action: 'RECONCILE',
-      entity: 'CASH',
-      entityId: targetDate,
-      descriptionMr: `${req.user.name} यांनी ${targetDate} चा रोख ताळेबंद नोंदवला. प्रत्यक्ष शिल्लक: ₹${actClosing} (तफावत: ₹${diff}).`,
-      descriptionEn: `Reconciled cash for ${targetDate}. Actual Closing: ₹${actClosing} (Diff: ₹${diff}).`,
-      newValues: savedRecord,
-      req
-    });
+    await logAudit({ userId: req.user.id, userName: req.user.name, userRole: req.user.role, action: 'RECONCILE', entity: 'CASH', entityId: targetDate, descriptionMr: `${req.user.name} यांनी ${targetDate} चा रोख ताळेबंद नोंदवला. प्रत्यक्ष शिल्लक: ₹${actClosing} (तफावत: ₹${diff}).`, descriptionEn: `Reconciled cash for ${targetDate}. Actual Closing: ₹${actClosing} (Diff: ₹${diff}).`, newValues: savedRecord, req });
 
-    return res.json({
-      success: true,
-      message: diff === 0
-        ? 'रोख ताळेबंद यशस्वीरित्या जुळला! / Cash reconciled with zero difference.'
-        : `रोख ताळेबंद जतन झाला. तफावत: ₹${diff} / Cash recorded with ₹${diff} discrepancy.`,
-      data: savedRecord
-    });
+    return res.json({ success: true, message: diff === 0 ? 'रोख ताळेबंद यशस्वीरित्या जुळला! / Cash reconciled with zero difference.' : `रोख ताळेबंद जतन झाला. तफावत: ₹${diff} / Cash recorded with ₹${diff} discrepancy.`, data: savedRecord });
   } catch (err) {
     console.error('reconcileCash error:', err);
     return res.status(500).json({ success: false, message: 'ताळेबंद जतन करताना त्रुटी.' });
@@ -156,10 +67,9 @@ export async function reconcileCash(req, res) {
 
 export async function getCashHistory(req, res) {
   try {
-    const history = await db.all(
-      'SELECT * FROM cash_reconciliation ORDER BY reconciliation_date DESC LIMIT 30'
-    );
-    return res.json({ success: true, data: history });
+    const { data, error } = await db.from('cash_reconciliation').select('*').order('reconciliation_date', { ascending: false }).limit(30);
+    throwIfError(error);
+    return res.json({ success: true, data: data || [] });
   } catch (err) {
     console.error('getCashHistory error:', err);
     return res.status(500).json({ success: false, message: 'इतिहास मिळवताना त्रुटी.' });

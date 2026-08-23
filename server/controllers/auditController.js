@@ -1,39 +1,33 @@
 import { db } from '../database/db.js';
+import { throwIfError } from '../utils/dbHelpers.js';
 
 export async function getAuditLogs(req, res) {
   try {
     const { page = 1, limit = 25, entity = '', action = '' } = req.query;
-    const offset = (Number(page) - 1) * Number(limit);
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, Number(limit) || 25));
+    const offset = (pageNum - 1) * limitNum;
 
-    let whereConditions = [];
-    let params = [];
+    let query = db
+      .from('audit_logs')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false });
 
-    if (entity) {
-      whereConditions.push('entity = ?');
-      params.push(entity);
-    }
+    if (entity) query = query.eq('entity', entity);
+    if (action) query = query.eq('action', action);
 
-    if (action) {
-      whereConditions.push('action = ?');
-      params.push(action);
-    }
+    const { data: logs, count, error } = await query.range(offset, offset + limitNum - 1);
+    throwIfError(error);
 
-    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
-
-    const countRow = await db.get(`SELECT COUNT(*) as total FROM audit_logs ${whereClause}`, params);
-    const logs = await db.all(
-      `SELECT * FROM audit_logs ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, Number(limit), offset]
-    );
-
+    const total = count || 0;
     return res.json({
       success: true,
-      data: logs,
+      data: logs || [],
       pagination: {
-        total: countRow.total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(countRow.total / Number(limit)) || 1
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum) || 1
       }
     });
   } catch (err) {

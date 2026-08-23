@@ -13,8 +13,8 @@ export function UpiQrModal({ isOpen, onClose, defaultAmount = 0, note = 'श्�
   const [customAmount, setCustomAmount] = useState(defaultAmount || 501);
   const [isCopied, setIsCopied] = useState(false);
 
-  const upiId = mandal?.upi_id || 'ganeshmandal@sbi';
-  const upiName = mandal?.upi_name || 'Shree Ganesh Mitra Mandal Trust';
+  const upiId = mandal?.upi_id || 'sarveshkharoshe8-2@okaxis';
+  const upiName = mandal?.upi_name || 'Sarvesh Kharoshe';
 
   // Construct NPCI standard UPI deep-link URI
   const upiUri = customAmount > 0
@@ -35,7 +35,7 @@ export function UpiQrModal({ isOpen, onClose, defaultAmount = 0, note = 'श्�
       isOpen={isOpen}
       onClose={onClose}
       title="🕉️ अधिकृत UPI QR कोड पेमेंट"
-      subtitle={`${mandal?.name_mr || 'श्री गणेश मित्र मंडळ'} बँक खाते`}
+      subtitle={`${mandal?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ'} बँक खाते`}
       maxWidth="max-w-md"
     >
       <div className="flex flex-col items-center text-center space-y-4">

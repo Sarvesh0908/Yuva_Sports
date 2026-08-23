@@ -159,7 +159,7 @@ export function SettingsPage() {
                 name="address_mr"
                 value={formData.address_mr}
                 onChange={handleChange}
-                placeholder="१२४, कसबा पेठ, शनिवार वाडा जवळ, पुणे - ४११ ०११"
+                placeholder="युवा स्पोर्ट्स चौक, दत्तवाड | ४१६१०७ , महाराष्ट्र |"
                 className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none focus:ring-2 focus:ring-amber-500"
               />
             </div>

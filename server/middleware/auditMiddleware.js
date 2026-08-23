@@ -14,19 +14,26 @@ export async function logAudit({
   req = null
 }) {
   try {
-    const ipAddress = req ? (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '') : '';
-    const oldStr = oldValues ? (typeof oldValues === 'string' ? oldValues : JSON.stringify(oldValues)) : null;
-    const newStr = newValues ? (typeof newValues === 'string' ? newValues : JSON.stringify(newValues)) : null;
+    const forwarded = req?.headers?.['x-forwarded-for'];
+    const ipAddress = forwarded
+      ? String(forwarded).split(',')[0].trim()
+      : (req?.socket?.remoteAddress || '');
 
-    await db.run(`
-      INSERT INTO audit_logs (
-        user_id, user_name, user_role, action, entity, entity_id,
-        description_mr, description_en, old_values, new_values, ip_address
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      userId, userName, userRole, action, entity, entityId,
-      descriptionMr, descriptionEn, oldStr, newStr, ipAddress
-    ]);
+    const { error } = await db.from('audit_logs').insert({
+      user_id: userId,
+      user_name: userName,
+      user_role: userRole,
+      action,
+      entity,
+      entity_id: entityId,
+      description_mr: descriptionMr,
+      description_en: descriptionEn,
+      old_values: oldValues,
+      new_values: newValues,
+      ip_address: ipAddress
+    });
+
+    if (error) throw error;
   } catch (err) {
     console.error('Failed to log audit event:', err);
   }

@@ -1,146 +1,311 @@
-import sqlite3 from 'sqlite3';
+import 'dotenv/config';
 import bcrypt from 'bcryptjs';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { createClient } from '@supabase/supabase-js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const dbPath = path.resolve(__dirname, 'ganpati_mandal.sqlite');
-const sqlite = sqlite3.verbose();
+if (!supabaseUrl) {
+  throw new Error(
+    'SUPABASE_URL is missing from environment variables.'
+  );
+}
 
-const rawDb = new sqlite.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error connecting to SQLite database:', err.message);
-  } else {
-    console.log('Connected to SQLite database at:', dbPath);
-    // Enable WAL mode for better concurrency
-    rawDb.run('PRAGMA journal_mode = WAL;');
-    rawDb.run('PRAGMA foreign_keys = ON;');
+if (!supabaseServiceKey) {
+  throw new Error(
+    'SUPABASE_SERVICE_ROLE_KEY is missing from environment variables.'
+  );
+}
+
+// ==========================================
+// SUPABASE CLIENT
+// ==========================================
+
+export const db = createClient(
+  supabaseUrl,
+  supabaseServiceKey,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    }
   }
-});
+);
 
-// Promisified DB wrapper
-export const db = {
-  get: (sql, params = []) => {
-    return new Promise((resolve, reject) => {
-      rawDb.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-  },
+export const supabase = db;
 
-  all: (sql, params = []) => {
-    return new Promise((resolve, reject) => {
-      rawDb.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-  },
+// ==========================================
+// STORAGE BUCKET
+// ==========================================
 
-  run: (sql, params = []) => {
-    return new Promise((resolve, reject) => {
-      rawDb.run(sql, params, function (err) {
-        if (err) reject(err);
-        else resolve({ lastID: this.lastID, changes: this.changes });
-      });
-    });
-  },
+export const STORAGE_BUCKET =
+  process.env.SUPABASE_STORAGE_BUCKET ||
+  'mandal-uploads';
 
-  exec: (sql) => {
-    return new Promise((resolve, reject) => {
-      rawDb.exec(sql, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  },
 
-  close: () => {
-    return new Promise((resolve, reject) => {
-      rawDb.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-};
+// ==========================================
+// ENSURE STORAGE BUCKET
+// ==========================================
 
-export async function initDb() {
+export async function ensureStorageBucket() {
   try {
-    const schemaPath = path.resolve(__dirname, 'schema.sql');
-    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-    await db.exec(schemaSql);
+    const { data, error } =
+      await db.storage.getBucket(STORAGE_BUCKET);
 
-    try {
-      await db.run('ALTER TABLE mandal_settings ADD COLUMN initial_opening_balance REAL DEFAULT 0');
-    } catch (e) {
-      // column already exists
+    if (!error && data) {
+      console.log(
+        `Supabase Storage bucket ready: ${STORAGE_BUCKET}`
+      );
+      return;
     }
 
-    console.log('Database schema verified/initialized successfully.');
-  } catch (err) {
-    console.error('Database initialization error:', err);
-    throw err;
+    const notFound =
+      error &&
+      (
+        error.statusCode === '404' ||
+        error.status === 404 ||
+        /not found/i.test(error.message || '')
+      );
+
+    if (!notFound && error) {
+      console.warn(
+        'Could not check Supabase Storage bucket:',
+        error.message
+      );
+    }
+
+    const { error: createError } =
+      await db.storage.createBucket(
+        STORAGE_BUCKET,
+        {
+          public: true,
+          fileSizeLimit: 10 * 1024 * 1024,
+          allowedMimeTypes: [
+            'image/jpeg',
+            'image/png',
+            'image/webp',
+            'image/gif',
+            'application/pdf'
+          ]
+        }
+      );
+
+    if (
+      createError &&
+      !/already exists/i.test(
+        createError.message || ''
+      )
+    ) {
+      throw createError;
+    }
+
+    console.log(
+      `Supabase Storage bucket created: ${STORAGE_BUCKET}`
+    );
+
+  } catch (error) {
+    console.error(
+      'Storage bucket initialization error:',
+      error
+    );
+
+    throw error;
   }
 }
 
+
+// ==========================================
+// DATABASE CONNECTION TEST
+// ==========================================
+
+export async function initDb() {
+
+  const { error } = await db
+    .from('mandal_settings')
+    .select('id')
+    .limit(1);
+
+  if (error) {
+    throw new Error(
+      `Supabase database connection failed: ${error.message}`
+    );
+  }
+
+  await ensureStorageBucket();
+
+  console.log(
+    'Connected to Supabase PostgreSQL successfully.'
+  );
+}
+
+
+// ==========================================
+// INITIAL APPLICATION SETUP
+// ==========================================
+
 export async function ensureInitialSetup() {
-  try {
-    await initDb();
 
-    // 1. Ensure Mandal Settings exist
-    const mandalCount = await db.get('SELECT COUNT(*) as count FROM mandal_settings');
-    if (!mandalCount || mandalCount.count === 0) {
-      console.log('Initializing default Mandal Settings...');
-      await db.run(`
-        INSERT INTO mandal_settings (
-          name_mr, name_en, tagline_mr, tagline_en, address_mr, address_en,
-          contact_phone, contact_email, registration_no, festival_year,
-          arrival_date, visarjan_date, upi_id, upi_name, receipt_prefix, receipt_language
-        ) VALUES (
+  await initDb();
+
+  // ----------------------------------------
+  // Mandal settings
+  // ----------------------------------------
+
+  const {
+    data: settings,
+    error: settingsError
+  } = await db
+    .from('mandal_settings')
+    .select('id')
+    .limit(1);
+
+  if (settingsError) {
+    throw settingsError;
+  }
+
+  if (!settings || settings.length === 0) {
+
+    const { error } = await db
+      .from('mandal_settings')
+      .insert({
+        name_mr:
           'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड',
+
+        name_en:
           'Yuva Sports Ganeshostav Mandal, Dattawad',
+
+        tagline_mr:
           'स्थापना: १९८८ | ! नवे पर्व युवा सर्व !',
+
+        tagline_en:
           'Est: 1988 | Reg. No. -',
+
+        address_mr:
           'युवा स्पोर्ट्स चौक, दत्तवाड | ४१६१०७ , महाराष्ट्र |',
+
+        address_en:
           'Yuva Sports Chowk, Dattawad | 416107, Maharashtra |',
+
+        contact_phone:
+          process.env.MANDAL_CONTACT_PHONE ||
           '+91 9699049637',
-          'sarveshkharoshe8@gmail.com',
-          'MAH/PUNE/1992/F-1024',
+
+        contact_email:
+          process.env.MANDAL_CONTACT_EMAIL ||
+          'contact@yuvasports.org',
+
+        registration_no:
+          process.env.MANDAL_REGISTRATION_NO ||
+          '-',
+
+        festival_year:
+          Number(process.env.FESTIVAL_YEAR) ||
           2026,
-          '2026-09-14T09:00:00',
-          '2026-09-25T18:00:00',
-          'sarveshkharoshe8-2@okaxis',
-          'Sarvesh Kharoshe',
+
+        arrival_date:
+          process.env.ARRIVAL_DATE ||
+          '2026-09-14T09:00:00+05:30',
+
+        visarjan_date:
+          process.env.VISARJAN_DATE ||
+          '2026-09-23T18:00:00+05:30',
+
+        upi_id:
+          process.env.MANDAL_UPI_ID ||
+          '',
+
+        upi_name:
+          process.env.MANDAL_UPI_NAME ||
+          'Yuva Sports Ganeshostav Mandal',
+
+        receipt_prefix:
+          process.env.RECEIPT_PREFIX ||
           'YUVA-2026-',
-          'mr'
-        )
-      `);
+
+        receipt_language: 'mr',
+
+        initial_opening_balance:
+          Number(
+            process.env.INITIAL_OPENING_BALANCE
+          ) || 0
+      });
+
+    if (error) {
+      throw error;
     }
 
-    // 2. Ensure Super Admin user exists
-    const adminCount = await db.get("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-    if (!adminCount || adminCount.count === 0) {
-      const adminName = process.env.ADMIN_NAME || 'सचिन मनगूळे(अध्यक्ष)';
-      const adminEmail = process.env.ADMIN_EMAIL || 'admin@ganeshmandal.org';
-      const adminMobile = process.env.ADMIN_MOBILE || '9699049637';
-      const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
-      const passwordHash = await bcrypt.hash(adminPassword, 10);
+    console.log(
+      'Default Mandal settings created.'
+    );
+  }
 
-      await db.run(`
-        INSERT INTO users (name, email, mobile, password_hash, role, status)
-        VALUES (?, ?, ?, ?, 'admin', 'active')
-      `, [adminName, adminEmail, adminMobile, passwordHash]);
 
-      console.log(`Initial Administrator account created: ${adminEmail} / ${adminMobile}`);
+  // ----------------------------------------
+  // Initial Admin
+  // ----------------------------------------
+
+  const {
+    data: admins,
+    error: adminCheckError
+  } = await db
+    .from('users')
+    .select('id')
+    .eq('role', 'admin')
+    .limit(1);
+
+  if (adminCheckError) {
+    throw adminCheckError;
+  }
+
+  if (!admins || admins.length === 0) {
+
+    const adminPassword =
+      process.env.ADMIN_PASSWORD;
+
+    if (!adminPassword) {
+      throw new Error(
+        'ADMIN_PASSWORD must be configured in environment variables before first startup.'
+      );
     }
-  } catch (err) {
-    console.error('ensureInitialSetup error:', err);
-    throw err;
+
+    const passwordHash =
+      await bcrypt.hash(
+        adminPassword,
+        10
+      );
+
+    const { error } = await db
+      .from('users')
+      .insert({
+        name:
+          process.env.ADMIN_NAME ||
+          'Administrator',
+
+        email:
+          process.env.ADMIN_EMAIL ||
+          'admin@yuvasports.org',
+
+        mobile:
+          process.env.ADMIN_MOBILE ||
+          '9699049637',
+
+        password_hash:
+          passwordHash,
+
+        role: 'admin',
+
+        status: 'active'
+      });
+
+    if (error) {
+      throw error;
+    }
+
+    console.log(
+      'Initial Administrator account created.'
+    );
   }
 }
 

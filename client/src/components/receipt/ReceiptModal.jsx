@@ -19,7 +19,7 @@ export function ReceiptModal({ isOpen, onClose, receipt }) {
 
   if (!receipt) return null;
 
-  const mandalName = mandal?.name_mr || 'श्री गणेश मित्र मंडळ';
+  const mandalName = mandal?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड';
   const verificationUrl = `${window.location.origin}/verify-receipt/${receipt.receipt_number}`;
 
   // WhatsApp formatted messages
@@ -27,7 +27,7 @@ export function ReceiptModal({ isOpen, onClose, receipt }) {
     if (lang === 'en') {
       return `🙏 *Greetings ${receipt.donor_name}*,
 
-Thank you wholeheartedly for your contribution to *${mandal?.name_en || 'Shree Ganesh Mitra Mandal'}*.
+Thank you wholeheartedly for your contribution to *${mandal?.name_en || 'Yuva Sports Ganeshotsav Mandal, Dattawad'}*.
 
 🧾 *Receipt No:* ${receipt.receipt_number}
 💰 *Amount:* ₹${Number(receipt.amount).toLocaleString('en-IN')}

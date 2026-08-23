@@ -16,7 +16,7 @@ export function DigitalReceipt({ receipt, mandal, receiptRef }) {
     tagline_mr: 'स्थापना: १९८८ | ! नवे पर्व युवा सर्व !',
     address_mr: 'युवा स्पोर्ट्स चौक, दत्तवाड | ४१६१०७ , महाराष्ट्र |',
     contact_phone: '+91 9699049637',
-    registration_no: 'MAH/PUNE/1992/F-1024',
+    registration_no: '-',
     festival_year: 2026
   };
 

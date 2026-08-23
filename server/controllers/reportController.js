@@ -1,107 +1,73 @@
 import { db } from '../database/db.js';
+import { countByAndSum, istDayBounds, sum, throwIfError } from '../utils/dbHelpers.js';
+
+function applyDateRange(query, range, startDate, endDate) {
+  const now = new Date();
+  if (range === 'today') {
+    const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+    const bounds = istDayBounds(date);
+    return query.gte('created_at', bounds.start).lt('created_at', bounds.end);
+  }
+  if (range === '7days' || range === '30days') {
+    const days = range === '7days' ? 7 : 30;
+    return query.gte('created_at', new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString());
+  }
+  if (range === 'custom' && startDate && endDate) {
+    return query.gte('created_at', istDayBounds(startDate).start).lt('created_at', istDayBounds(endDate).end);
+  }
+  return query;
+}
+
+function csvCell(value) {
+  const text = value == null ? '' : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
 
 export async function getFinancialReport(req, res) {
   try {
     const { range = 'all', startDate = '', endDate = '' } = req.query;
+    let incomeQuery = db.from('income_transactions').select('amount, category, payment_method, collector_name, created_at').eq('is_deleted', false);
+    let expenseQuery = db.from('expense_transactions').select('amount, category, payment_method, status, created_at').eq('is_deleted', false);
+    incomeQuery = applyDateRange(incomeQuery, range, startDate, endDate);
+    expenseQuery = applyDateRange(expenseQuery, range, startDate, endDate);
 
-    let incomeDateFilter = '';
-    let expenseDateFilter = '';
-    let params = [];
+    const [incomeResult, expenseResult, mandalResult] = await Promise.all([
+      incomeQuery,
+      expenseQuery,
+      db.from('mandal_settings').select('*').limit(1).maybeSingle()
+    ]);
+    throwIfError(incomeResult.error);
+    throwIfError(expenseResult.error);
+    throwIfError(mandalResult.error);
 
-    if (range === 'today') {
-      incomeDateFilter = "AND date(created_at) = date('now')";
-      expenseDateFilter = "AND date(created_at) = date('now')";
-    } else if (range === '7days') {
-      incomeDateFilter = "AND created_at >= date('now', '-7 days')";
-      expenseDateFilter = "AND created_at >= date('now', '-7 days')";
-    } else if (range === '30days') {
-      incomeDateFilter = "AND created_at >= date('now', '-30 days')";
-      expenseDateFilter = "AND created_at >= date('now', '-30 days')";
-    } else if (range === 'custom' && startDate && endDate) {
-      incomeDateFilter = "AND date(created_at) >= date(?) AND date(created_at) <= date(?)";
-      expenseDateFilter = "AND date(created_at) >= date(?) AND date(created_at) <= date(?)";
-      params = [startDate, endDate];
-    }
+    const incomes = incomeResult.data || [];
+    const expenses = expenseResult.data || [];
+    const approved = expenses.filter(r => ['approved', 'paid'].includes(r.status));
+    const pending = expenses.filter(r => r.status === 'pending');
+    const totalIncome = sum(incomes);
+    const totalApprovedExpense = sum(approved);
 
-    // 1. Income summary
-    const incomeSummary = await db.get(`
-      SELECT 
-        COALESCE(SUM(amount), 0) as total_income,
-        COUNT(id) as count,
-        COALESCE(SUM(CASE WHEN category = 'vargani' THEN amount ELSE 0 END), 0) as vargani_total,
-        COALESCE(SUM(CASE WHEN category = 'donation' THEN amount ELSE 0 END), 0) as donation_total,
-        COALESCE(SUM(CASE WHEN category = 'sponsorship' THEN amount ELSE 0 END), 0) as sponsorship_total,
-        COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END), 0) as cash_income,
-        COALESCE(SUM(CASE WHEN payment_method != 'cash' THEN amount ELSE 0 END), 0) as digital_income
-      FROM income_transactions
-      WHERE is_deleted = 0 ${incomeDateFilter}
-    `, params);
-
-    // 2. Expense summary
-    const expenseSummary = await db.get(`
-      SELECT 
-        COALESCE(SUM(amount), 0) as total_expense,
-        COUNT(id) as count,
-        COALESCE(SUM(CASE WHEN status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as approved_expense,
-        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_expense,
-        COALESCE(SUM(CASE WHEN payment_method = 'cash' AND status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as cash_expense,
-        COALESCE(SUM(CASE WHEN payment_method != 'cash' AND status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as digital_expense
-      FROM expense_transactions
-      WHERE is_deleted = 0 ${expenseDateFilter}
-    `, params);
-
-    // 3. Category Breakdown
-    const incomeByCategory = await db.all(`
-      SELECT category, COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
-      FROM income_transactions
-      WHERE is_deleted = 0 ${incomeDateFilter}
-      GROUP BY category
-      ORDER BY amount DESC
-    `, params);
-
-    const expenseByCategory = await db.all(`
-      SELECT category, COUNT(*) as count, COALESCE(SUM(amount), 0) as amount
-      FROM expense_transactions
-      WHERE is_deleted = 0 AND status IN ('approved', 'paid') ${expenseDateFilter}
-      GROUP BY category
-      ORDER BY amount DESC
-    `, params);
-
-    // 4. Collector breakdown
-    const collectionsByCollector = await db.all(`
-      SELECT 
-        COALESCE(collector_name, 'इतर') as collector_name,
-        COUNT(*) as count,
-        COALESCE(SUM(amount), 0) as total_amount
-      FROM income_transactions
-      WHERE is_deleted = 0 ${incomeDateFilter}
-      GROUP BY collector_name
-      ORDER BY total_amount DESC
-    `, params);
-
-    const totalIncome = Number(incomeSummary.total_income) || 0;
-    const totalApprovedExpense = Number(expenseSummary.approved_expense) || 0;
-    const netBalance = totalIncome - totalApprovedExpense;
-
-    const mandal = await db.get('SELECT * FROM mandal_settings LIMIT 1');
+    const incomeByCategory = countByAndSum(incomes, 'category').map(r => ({ category: r.category, count: r.count, amount: r.total_amount })).sort((a, b) => b.amount - a.amount);
+    const expenseByCategory = countByAndSum(approved, 'category').map(r => ({ category: r.category, count: r.count, amount: r.total_amount })).sort((a, b) => b.amount - a.amount);
+    const collectionsByCollector = countByAndSum(incomes.map(r => ({ ...r, collector_name: r.collector_name || 'इतर' })), 'collector_name').sort((a, b) => b.total_amount - a.total_amount);
 
     return res.json({
       success: true,
       data: {
         range,
-        mandal,
+        mandal: mandalResult.data,
         totals: {
           totalIncome,
           totalApprovedExpense,
-          netBalance,
-          varganiTotal: Number(incomeSummary.vargani_total) || 0,
-          donationTotal: Number(incomeSummary.donation_total) || 0,
-          sponsorshipTotal: Number(incomeSummary.sponsorship_total) || 0,
-          cashIncome: Number(incomeSummary.cash_income) || 0,
-          digitalIncome: Number(incomeSummary.digital_income) || 0,
-          cashExpense: Number(expenseSummary.cash_expense) || 0,
-          digitalExpense: Number(expenseSummary.digital_expense) || 0,
-          pendingExpense: Number(expenseSummary.pending_expense) || 0
+          netBalance: totalIncome - totalApprovedExpense,
+          varganiTotal: sum(incomes.filter(r => r.category === 'vargani')),
+          donationTotal: sum(incomes.filter(r => r.category === 'donation')),
+          sponsorshipTotal: sum(incomes.filter(r => r.category === 'sponsorship')),
+          cashIncome: sum(incomes.filter(r => r.payment_method === 'cash')),
+          digitalIncome: sum(incomes.filter(r => r.payment_method !== 'cash')),
+          cashExpense: sum(approved.filter(r => r.payment_method === 'cash')),
+          digitalExpense: sum(approved.filter(r => r.payment_method !== 'cash')),
+          pendingExpense: sum(pending)
         },
         incomeByCategory,
         expenseByCategory,
@@ -116,112 +82,73 @@ export async function getFinancialReport(req, res) {
 
 export async function exportCsvData(req, res) {
   try {
-    const { type = 'balance_sheet' } = req.params;
+    const type = req.params.type || 'balance_sheet';
 
     if (type === 'balance_sheet' || type === 'financial') {
-      const mandal = await db.get('SELECT name_mr, festival_year FROM mandal_settings LIMIT 1');
-      const mandalName = mandal?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड';
-      const year = mandal?.festival_year || 2026;
+      const [mandalResult, incomeResult, expenseResult] = await Promise.all([
+        db.from('mandal_settings').select('name_mr, festival_year').limit(1).maybeSingle(),
+        db.from('income_transactions').select('receipt_number, donor_name, mobile, address, amount, payment_method, category, purpose, collector_name, created_at').eq('is_deleted', false).order('created_at', { ascending: true }),
+        db.from('expense_transactions').select('expense_id, category, description, amount, payment_method, paid_to, bill_number, status, approved_by_name, created_at').eq('is_deleted', false).order('created_at', { ascending: true })
+      ]);
+      throwIfError(mandalResult.error); throwIfError(incomeResult.error); throwIfError(expenseResult.error);
 
-      const incomeSummary = await db.get(`
-        SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-        FROM income_transactions WHERE is_deleted = 0
-      `);
-      const expenseSummary = await db.get(`
-        SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-        FROM expense_transactions WHERE is_deleted = 0 AND status IN ('approved', 'paid')
-      `);
+      const mandalName = mandalResult.data?.name_mr || 'युवा स्पोर्ट्स गणेशोत्सव मंडळ, दत्तवाड';
+      const year = mandalResult.data?.festival_year || 2026;
+      const incomeRows = incomeResult.data || [];
+      const expenseRows = expenseResult.data || [];
+      const approvedExpenses = expenseRows.filter(r => ['approved', 'paid'].includes(r.status));
+      const totalIncome = sum(incomeRows);
+      const totalExpense = sum(approvedExpenses);
 
-      const totalIncome = Number(incomeSummary.total) || 0;
-      const totalExpense = Number(expenseSummary.total) || 0;
-      const netBalance = totalIncome - totalExpense;
-
-      let csv = `"${mandalName} - वार्षिक आर्थिक ताळेबंद अहवाल (${year})"\n`;
-      csv += `"अहवाल दिनांक: ${new Date().toLocaleDateString('en-GB')}"\n\n`;
+      let csv = `${csvCell(`${mandalName} - वार्षिक आर्थिक ताळेबंद अहवाल (${year})`)}\n`;
+      csv += `${csvCell(`अहवाल दिनांक: ${new Date().toLocaleDateString('en-GB')}`)}\n\n`;
       csv += `--- ताळेबंद गोषवारा (Financial Summary) ---\n`;
       csv += `एकूण जमा रक्कम (Total Income),${totalIncome}\n`;
       csv += `एकूण मंजूर खर्च (Total Expenses),${totalExpense}\n`;
-      csv += `एकूण निव्वळ शिल्लक (Net Balance),${netBalance}\n\n`;
-
+      csv += `एकूण निव्वळ शिल्लक (Net Balance),${totalIncome - totalExpense}\n\n`;
       csv += `--- सर्व जमा नोंदी (Income & Vargani Transactions) ---\n`;
       csv += `पावती क्र.,देणगीदार,मोबाईल,पत्ता,रक्कम (₹),पेमेंट पद्धत,प्रवर्ग,उद्देश,संकलक,दिनांक\n`;
-      const incomeRows = await db.all(`
-        SELECT receipt_number, donor_name, mobile, address, amount, payment_method, category, purpose, collector_name, created_at
-        FROM income_transactions WHERE is_deleted = 0 ORDER BY created_at ASC
-      `);
-      incomeRows.forEach(r => {
-        csv += `"${r.receipt_number || ''}","${r.donor_name}","${r.mobile || ''}","${r.address || ''}",${r.amount},"${r.payment_method}","${r.category}","${r.purpose || ''}","${r.collector_name || ''}","${r.created_at}"\n`;
-      });
-
+      incomeRows.forEach(r => { csv += [r.receipt_number, r.donor_name, r.mobile, r.address, r.amount, r.payment_method, r.category, r.purpose, r.collector_name, r.created_at].map(csvCell).join(',') + '\n'; });
       csv += `\n--- सर्व खर्च नोंदी (Expense Transactions) ---\n`;
       csv += `खर्च आयडी,प्रवर्ग,वर्णन,रक्कम (₹),पेमेंट पद्धत,कोणाला दिले,बिल क्र.,स्थिती,मंजूरकर्ता,दिनांक\n`;
-      const expenseRows = await db.all(`
-        SELECT expense_id, category, description, amount, payment_method, paid_to, bill_number, status, approved_by_name, created_at
-        FROM expense_transactions WHERE is_deleted = 0 ORDER BY created_at ASC
-      `);
-      expenseRows.forEach(r => {
-        csv += `"${r.expense_id}","${r.category}","${r.description}",${r.amount},"${r.payment_method}","${r.paid_to}","${r.bill_number || ''}","${r.status}","${r.approved_by_name || ''}","${r.created_at}"\n`;
-      });
+      expenseRows.forEach(r => { csv += [r.expense_id, r.category, r.description, r.amount, r.payment_method, r.paid_to, r.bill_number, r.status, r.approved_by_name, r.created_at].map(csvCell).join(',') + '\n'; });
 
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', 'attachment; filename="ganpati_mandal_balance_sheet.csv"');
       return res.send('\uFEFF' + csv);
     }
 
+    let query;
+    let headers;
+    let filename;
+    let columns;
+
     if (type === 'income') {
-      const rows = await db.all(`
-        SELECT transaction_id, receipt_number, donor_name, mobile, address, amount, payment_method, category, purpose, collector_name, created_at
-        FROM income_transactions
-        WHERE is_deleted = 0
-        ORDER BY created_at DESC
-      `);
-
-      let csv = 'पावती क्र.,Transaction ID,देणगीदार,मोबाईल,पत्ता,रक्कम (₹),पेमेंट पद्धत,प्रवर्ग,उद्देश,संकलक,दिनांक\n';
-      rows.forEach(r => {
-        csv += `"${r.receipt_number || ''}","${r.transaction_id}","${r.donor_name}","${r.mobile || ''}","${r.address || ''}",${r.amount},"${r.payment_method}","${r.category}","${r.purpose || ''}","${r.collector_name || ''}","${r.created_at}"\n`;
-      });
-
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', 'attachment; filename="ganpati_mandal_income.csv"');
-      return res.send('\uFEFF' + csv); // Include BOM for Excel Marathi/Unicode support
+      columns = ['receipt_number', 'transaction_id', 'donor_name', 'mobile', 'address', 'amount', 'payment_method', 'category', 'purpose', 'collector_name', 'created_at'];
+      headers = 'पावती क्र.,Transaction ID,देणगीदार,मोबाईल,पत्ता,रक्कम (₹),पेमेंट पद्धत,प्रवर्ग,उद्देश,संकलक,दिनांक\n';
+      filename = 'ganpati_mandal_income.csv';
+      query = db.from('income_transactions').select(columns.join(',')).eq('is_deleted', false).order('created_at', { ascending: false });
+    } else if (type === 'expenses') {
+      columns = ['expense_id', 'category', 'description', 'amount', 'payment_method', 'paid_to', 'bill_number', 'status', 'requested_by_name', 'approved_by_name', 'created_at'];
+      headers = 'Expense ID,Category,Description,Amount,Payment Method,Paid To,Bill No,Status,Requested By,Approved By,Date\n';
+      filename = 'ganpati_mandal_expenses.csv';
+      query = db.from('expense_transactions').select(columns.join(',')).eq('is_deleted', false).order('created_at', { ascending: false });
+    } else if (type === 'donors') {
+      columns = ['id', 'name', 'mobile', 'email', 'area', 'address', 'total_donated', 'donations_count', 'last_donated_at'];
+      headers = 'Donor ID,Name,Mobile,Email,Area,Address,Total Donated,Donations Count,Last Donated Date\n';
+      filename = 'ganpati_mandal_donors.csv';
+      query = db.from('donors').select(columns.join(',')).order('total_donated', { ascending: false });
+    } else {
+      return res.status(400).json({ success: false, message: 'अवैध एक्सपोर्ट प्रकार.' });
     }
 
-    if (type === 'expenses') {
-      const rows = await db.all(`
-        SELECT expense_id, category, description, amount, payment_method, paid_to, bill_number, status, requested_by_name, approved_by_name, created_at
-        FROM expense_transactions
-        WHERE is_deleted = 0
-        ORDER BY created_at DESC
-      `);
-
-      let csv = 'Expense ID,Category,Description,Amount,Payment Method,Paid To,Bill No,Status,Requested By,Approved By,Date\n';
-      rows.forEach(r => {
-        csv += `"${r.expense_id}","${r.category}","${r.description}",${r.amount},"${r.payment_method}","${r.paid_to}","${r.bill_number || ''}","${r.status}","${r.requested_by_name || ''}","${r.approved_by_name || ''}","${r.created_at}"\n`;
-      });
-
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', 'attachment; filename="ganpati_mandal_expenses.csv"');
-      return res.send('\uFEFF' + csv);
-    }
-
-    if (type === 'donors') {
-      const rows = await db.all(`
-        SELECT id, name, mobile, email, area, address, total_donated, donations_count, last_donated_at
-        FROM donors
-        ORDER BY total_donated DESC
-      `);
-
-      let csv = 'Donor ID,Name,Mobile,Email,Area,Address,Total Donated,Donations Count,Last Donated Date\n';
-      rows.forEach(r => {
-        csv += `${r.id},"${r.name}","${r.mobile}","${r.email || ''}","${r.area || ''}","${r.address || ''}",${r.total_donated},${r.donations_count},"${r.last_donated_at || ''}"\n`;
-      });
-
-      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-      res.setHeader('Content-Disposition', 'attachment; filename="ganpati_mandal_donors.csv"');
-      return res.send('\uFEFF' + csv);
-    }
-
-    return res.status(400).json({ success: false, message: 'अवैध एक्सपोर्ट प्रकार.' });
+    const { data: rows, error } = await query;
+    throwIfError(error);
+    let csv = headers;
+    (rows || []).forEach(r => { csv += columns.map(c => csvCell(r[c])).join(',') + '\n'; });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return res.send('\uFEFF' + csv);
   } catch (err) {
     console.error('exportCsvData error:', err);
     return res.status(500).json({ success: false, message: 'CSV एक्सपोर्ट करताना त्रुटी.' });

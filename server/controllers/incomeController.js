@@ -1,76 +1,57 @@
 import { db } from '../database/db.js';
 import { numberToWordsMarathi, numberToWordsEnglish } from '../utils/marathiNumberWords.js';
 import { logAudit } from '../middleware/auditMiddleware.js';
+import { uploadFileToSupabase } from '../middleware/uploadMiddleware.js';
+import { istDayBounds, safeSearchTerm, sum, throwIfError } from '../utils/dbHelpers.js';
+
+function applyIncomeFilters(query, filters) {
+  const { search, category, payment_method, startDate, endDate, donor_id } = filters;
+  if (search) {
+    const s = safeSearchTerm(search);
+    query = query.or(`donor_name.ilike.%${s}%,mobile.ilike.%${s}%,receipt_number.ilike.%${s}%,transaction_id.ilike.%${s}%,address.ilike.%${s}%`);
+  }
+  if (category) query = query.eq('category', category);
+  if (payment_method) query = query.eq('payment_method', payment_method);
+  if (donor_id) query = query.eq('donor_id', donor_id);
+  if (startDate) query = query.gte('created_at', istDayBounds(startDate).start);
+  if (endDate) query = query.lt('created_at', istDayBounds(endDate).end);
+  return query;
+}
 
 export async function getIncomeList(req, res) {
   try {
-    const {
-      page = 1,
-      limit = 20,
-      search = '',
-      category = '',
-      payment_method = '',
-      startDate = '',
-      endDate = '',
-      donor_id = ''
-    } = req.query;
+    const filters = {
+      search: req.query.search || '',
+      category: req.query.category || '',
+      payment_method: req.query.payment_method || '',
+      startDate: req.query.startDate || '',
+      endDate: req.query.endDate || '',
+      donor_id: req.query.donor_id || ''
+    };
+    const pageNum = Math.max(1, Number(req.query.page) || 1);
+    const limitNum = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const offset = (pageNum - 1) * limitNum;
 
-    const offset = (Number(page) - 1) * Number(limit);
-    let whereConditions = ['is_deleted = 0'];
-    let params = [];
+    let pageQuery = db.from('income_transactions').select('*', { count: 'exact' }).eq('is_deleted', false).order('created_at', { ascending: false });
+    pageQuery = applyIncomeFilters(pageQuery, filters);
+    const { data: transactions, count, error } = await pageQuery.range(offset, offset + limitNum - 1);
+    throwIfError(error);
 
-    if (search) {
-      whereConditions.push('(donor_name LIKE ? OR mobile LIKE ? OR receipt_number LIKE ? OR transaction_id LIKE ? OR address LIKE ?)');
-      const s = `%${search.trim()}%`;
-      params.push(s, s, s, s, s);
-    }
+    let sumQuery = db.from('income_transactions').select('amount').eq('is_deleted', false);
+    sumQuery = applyIncomeFilters(sumQuery, filters);
+    const { data: amountRows, error: sumError } = await sumQuery;
+    throwIfError(sumError);
 
-    if (category) {
-      whereConditions.push('category = ?');
-      params.push(category);
-    }
-
-    if (payment_method) {
-      whereConditions.push('payment_method = ?');
-      params.push(payment_method);
-    }
-
-    if (donor_id) {
-      whereConditions.push('donor_id = ?');
-      params.push(donor_id);
-    }
-
-    if (startDate) {
-      whereConditions.push('date(created_at) >= date(?)');
-      params.push(startDate);
-    }
-
-    if (endDate) {
-      whereConditions.push('date(created_at) <= date(?)');
-      params.push(endDate);
-    }
-
-    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
-
-    const countRow = await db.get(
-      `SELECT COUNT(*) as total, COALESCE(SUM(amount), 0) as total_amount FROM income_transactions ${whereClause}`,
-      params
-    );
-
-    const transactions = await db.all(
-      `SELECT * FROM income_transactions ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, Number(limit), offset]
-    );
-
+    const total = count || 0;
     return res.json({
       success: true,
-      data: transactions,
+      data: transactions || [],
       pagination: {
-        total: countRow.total,
-        totalAmount: countRow.total_amount,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(countRow.total / Number(limit)) || 1
+        total,
+        totalAmount: sum(amountRows),
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum) || 1
       }
     });
   } catch (err) {
@@ -80,145 +61,130 @@ export async function getIncomeList(req, res) {
 }
 
 export async function createIncome(req, res) {
+  let createdTx = null;
+  let donorBefore = null;
+  let finalDonorId = null;
+  let createdDonor = false;
+
   try {
-    const {
-      donor_name,
-      mobile = '',
-      email = '',
-      address = '',
-      area = '',
-      amount,
-      payment_method = 'cash',
-      category = 'vargani',
-      purpose = 'गणेशोत्सव वर्गणी',
-      notes = '',
-      donor_id = null
-    } = req.body;
-
+    const { donor_name, mobile = '', email = '', address = '', area = '', amount, payment_method = 'cash', category = 'vargani', purpose = 'गणेशोत्सव वर्गणी', notes = '', donor_id = null } = req.body;
     const parsedAmount = Number(amount);
-    if (!donor_name || !donor_name.trim()) {
-      return res.status(400).json({ success: false, message: 'देणगीदाराचे / व्यक्तीचे नाव आवश्यक आहे.' });
-    }
+    if (!donor_name?.trim()) return res.status(400).json({ success: false, message: 'देणगीदाराचे / व्यक्तीचे नाव आवश्यक आहे.' });
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ success: false, message: 'कृपया वैध रक्कम भरा (Amount must be > 0).' });
 
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({ success: false, message: 'कृपया वैध रक्कम भरा (Amount must be > 0).' });
-    }
+    const { data: mandal, error: mandalError } = await db.from('mandal_settings').select('*').limit(1).maybeSingle();
+    throwIfError(mandalError);
+    const settings = mandal || { receipt_prefix: 'GM-2026-', festival_year: 2026 };
 
-    // 1. Fetch Mandal Settings for receipt prefix and festival year
-    const mandal = await db.get('SELECT * FROM mandal_settings LIMIT 1') || {
-      receipt_prefix: 'GM-2026-',
-      festival_year: 2026
-    };
-
-    // 2. Find or Create Donor
-    let finalDonorId = donor_id;
-    if (!finalDonorId && mobile && mobile.trim()) {
-      const existingDonor = await db.get('SELECT id FROM donors WHERE mobile = ? LIMIT 1', [mobile.trim()]);
+    finalDonorId = donor_id || null;
+    if (!finalDonorId && mobile.trim()) {
+      const { data: existingDonor, error } = await db.from('donors').select('*').eq('mobile', mobile.trim()).maybeSingle();
+      throwIfError(error);
       if (existingDonor) {
         finalDonorId = existingDonor.id;
+        donorBefore = existingDonor;
       }
+    }
+
+    if (finalDonorId && !donorBefore) {
+      const { data, error } = await db.from('donors').select('*').eq('id', finalDonorId).maybeSingle();
+      throwIfError(error);
+      donorBefore = data;
     }
 
     if (!finalDonorId) {
-      const newDonorRes = await db.run(`
-        INSERT INTO donors (name, mobile, email, address, area, total_donated, donations_count, last_donated_at, notes)
-        VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, ?)
-      `, [
-        donor_name.trim(),
-        mobile ? mobile.trim() : '',
-        email ? email.trim() : '',
-        address ? address.trim() : '',
-        area ? area.trim() : '',
-        parsedAmount,
-        notes ? notes.trim() : ''
-      ]);
-      finalDonorId = newDonorRes.lastID;
-    } else {
-      await db.run(`
-        UPDATE donors 
-        SET total_donated = total_donated + ?, 
-            donations_count = donations_count + 1,
-            last_donated_at = CURRENT_TIMESTAMP,
-            name = COALESCE(NULLIF(?, ''), name),
-            address = COALESCE(NULLIF(?, ''), address)
-        WHERE id = ?
-      `, [parsedAmount, donor_name.trim(), address ? address.trim() : '', finalDonorId]);
+      const { data: newDonor, error } = await db.from('donors').insert({
+        name: donor_name.trim(),
+        mobile: mobile.trim(),
+        email: email.trim(),
+        address: address.trim(),
+        area: area.trim(),
+        total_donated: parsedAmount,
+        donations_count: 1,
+        last_donated_at: new Date().toISOString(),
+        notes: notes.trim()
+      }).select('*').single();
+      throwIfError(error);
+      finalDonorId = newDonor.id;
+      createdDonor = true;
+    } else if (donorBefore) {
+      const { error } = await db.from('donors').update({
+        total_donated: (Number(donorBefore.total_donated) || 0) + parsedAmount,
+        donations_count: (Number(donorBefore.donations_count) || 0) + 1,
+        last_donated_at: new Date().toISOString(),
+        name: donor_name.trim() || donorBefore.name,
+        address: address.trim() || donorBefore.address
+      }).eq('id', finalDonorId);
+      throwIfError(error);
     }
 
-    // 3. Generate Unique Transaction ID & Receipt Number
-    const countRow = await db.get('SELECT COUNT(*) as count FROM income_transactions');
-    const nextNum = (countRow.count || 0) + 1;
+    const { count, error: countError } = await db.from('income_transactions').select('*', { count: 'exact', head: true });
+    throwIfError(countError);
+    const nextNum = (count || 0) + 1;
     const formattedNum = String(nextNum).padStart(6, '0');
-    const receiptPrefix = mandal.receipt_prefix || 'GM-2026-';
-    const receiptNumber = `${receiptPrefix}${formattedNum}`;
-    const transactionId = `TXN-${mandal.festival_year || 2026}-${formattedNum}`;
+    const receiptNumber = `${settings.receipt_prefix || 'GM-2026-'}${formattedNum}`;
+    const transactionId = `TXN-${settings.festival_year || 2026}-${formattedNum}`;
+    const attachmentUrl = req.file ? await uploadFileToSupabase(req.file, 'income') : '';
+    const collectorName = req.user?.name || 'स्वयंसेवक';
 
-    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : '';
-    const wordsMr = numberToWordsMarathi(parsedAmount);
-    const wordsEn = numberToWordsEnglish(parsedAmount);
-    const collectorName = req.user ? req.user.name : 'स्वयंसेवक';
-    const collectedById = req.user ? req.user.id : null;
+    const { data: tx, error: txError } = await db.from('income_transactions').insert({
+      transaction_id: transactionId,
+      donor_id: finalDonorId,
+      donor_name: donor_name.trim(),
+      mobile: mobile.trim(),
+      address: address.trim(),
+      amount: parsedAmount,
+      payment_method,
+      category,
+      purpose: purpose.trim(),
+      notes: notes.trim(),
+      collected_by_id: req.user?.id || null,
+      collector_name: collectorName,
+      receipt_number: receiptNumber,
+      attachment_url: attachmentUrl,
+      status: 'completed'
+    }).select('*').single();
+    throwIfError(txError);
+    createdTx = tx;
 
-    // 4. Insert Income Transaction
-    const incRes = await db.run(`
-      INSERT INTO income_transactions (
-        transaction_id, donor_id, donor_name, mobile, address, amount,
-        payment_method, category, purpose, notes, collected_by_id, collector_name,
-        receipt_number, attachment_url, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
-    `, [
-      transactionId, finalDonorId, donor_name.trim(), mobile ? mobile.trim() : '',
-      address ? address.trim() : '', parsedAmount, payment_method, category,
-      purpose ? purpose.trim() : '', notes ? notes.trim() : '',
-      collectedById, collectorName, receiptNumber, attachmentUrl
-    ]);
+    const verificationCode = `V-${Math.random().toString(36).substring(2, 8).toUpperCase()}-${Date.now().toString(36).slice(-3).toUpperCase()}`;
+    const { data: receipt, error: receiptError } = await db.from('receipts').insert({
+      receipt_number: receiptNumber,
+      transaction_id: tx.id,
+      donor_name: donor_name.trim(),
+      mobile: mobile.trim(),
+      address: address.trim(),
+      amount: parsedAmount,
+      amount_in_words_mr: numberToWordsMarathi(parsedAmount),
+      amount_in_words_en: numberToWordsEnglish(parsedAmount),
+      payment_method,
+      category,
+      purpose: purpose.trim(),
+      collector_name: collectorName,
+      verification_code: verificationCode
+    }).select('*').single();
+    throwIfError(receiptError);
 
-    const txDbId = incRes.lastID;
-    const verificationCode = `V-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const { error: linkError } = await db.from('income_transactions').update({ receipt_id: receipt.id }).eq('id', tx.id);
+    throwIfError(linkError);
 
-    // 5. Insert Digital Receipt
-    const receiptRes = await db.run(`
-      INSERT INTO receipts (
-        receipt_number, transaction_id, donor_name, mobile, address,
-        amount, amount_in_words_mr, amount_in_words_en, payment_method,
-        category, purpose, collector_name, verification_code
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      receiptNumber, txDbId, donor_name.trim(), mobile ? mobile.trim() : '',
-      address ? address.trim() : '', parsedAmount, wordsMr, wordsEn, payment_method,
-      category, purpose ? purpose.trim() : '', collectorName, verificationCode
-    ]);
+    await logAudit({ userId: req.user?.id, userName: req.user?.name, userRole: req.user?.role, action: 'CREATE', entity: 'INCOME', entityId: transactionId, descriptionMr: `${donor_name.trim()} यांच्याकडून ₹${parsedAmount.toLocaleString('en-IN')} ${category === 'vargani' ? 'वर्गणी' : 'जमा'} नोंदवली (पावती क्र: ${receiptNumber}).`, descriptionEn: `Recorded income of ₹${parsedAmount.toLocaleString('en-IN')} from ${donor_name.trim()} (Receipt: ${receiptNumber}).`, newValues: { transactionId, receiptNumber, amount: parsedAmount, donor_name, payment_method, category }, req });
 
-    await db.run('UPDATE income_transactions SET receipt_id = ? WHERE id = ?', [receiptRes.lastID, txDbId]);
-
-    const fullReceipt = await db.get('SELECT * FROM receipts WHERE id = ?', [receiptRes.lastID]);
-
-    // 6. Log Audit
-    await logAudit({
-      userId: req.user?.id,
-      userName: req.user?.name,
-      userRole: req.user?.role,
-      action: 'CREATE',
-      entity: 'INCOME',
-      entityId: transactionId,
-      descriptionMr: `${donor_name.trim()} यांच्याकडून ₹${parsedAmount.toLocaleString('en-IN')} ${category === 'vargani' ? 'वर्गणी' : 'जमा'} नोंदवली (पावती क्र: ${receiptNumber}).`,
-      descriptionEn: `Recorded income of ₹${parsedAmount.toLocaleString('en-IN')} from ${donor_name.trim()} (Receipt: ${receiptNumber}).`,
-      newValues: { transactionId, receiptNumber, amount: parsedAmount, donor_name, payment_method, category },
-      req
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: 'जमा रक्कम यशस्वीरित्या नोंदवली व पावती तयार झाली! / Income recorded & receipt generated!',
-      data: {
-        transactionId,
-        receiptNumber,
-        amount: parsedAmount,
-        receipt: fullReceipt
-      }
-    });
+    return res.status(201).json({ success: true, message: 'जमा रक्कम यशस्वीरित्या नोंदवली व पावती तयार झाली! / Income recorded & receipt generated!', data: { transactionId, receiptNumber, amount: parsedAmount, receipt } });
   } catch (err) {
     console.error('createIncome error:', err);
+
+    // Best-effort rollback because REST calls are not a single SQL transaction.
+    try {
+      if (createdTx?.id) await db.from('income_transactions').delete().eq('id', createdTx.id);
+      if (createdDonor && finalDonorId) await db.from('donors').delete().eq('id', finalDonorId);
+      else if (donorBefore && finalDonorId) {
+        await db.from('donors').update({ total_donated: donorBefore.total_donated, donations_count: donorBefore.donations_count, last_donated_at: donorBefore.last_donated_at, name: donorBefore.name, address: donorBefore.address }).eq('id', finalDonorId);
+      }
+    } catch (rollbackError) {
+      console.error('Income rollback error:', rollbackError);
+    }
+
     return res.status(500).json({ success: false, message: 'जमा रक्कम नोंदवताना त्रुटी निर्माण झाली.' });
   }
 }
@@ -226,40 +192,27 @@ export async function createIncome(req, res) {
 export async function deleteIncome(req, res) {
   try {
     const { id } = req.params;
-    const tx = await db.get('SELECT * FROM income_transactions WHERE id = ? AND is_deleted = 0', [id]);
-    if (!tx) {
-      return res.status(404).json({ success: false, message: 'व्यवहार सापडला नाही.' });
-    }
+    const { data: tx, error } = await db.from('income_transactions').select('*').eq('id', id).eq('is_deleted', false).maybeSingle();
+    throwIfError(error);
+    if (!tx) return res.status(404).json({ success: false, message: 'व्यवहार सापडला नाही.' });
 
-    await db.run('UPDATE income_transactions SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+    const { error: deleteError } = await db.from('income_transactions').update({ is_deleted: true }).eq('id', id);
+    throwIfError(deleteError);
 
-    // Deduct from donor total
     if (tx.donor_id) {
-      await db.run(`
-        UPDATE donors 
-        SET total_donated = MAX(0, total_donated - ?),
-            donations_count = MAX(0, donations_count - 1)
-        WHERE id = ?
-      `, [tx.amount, tx.donor_id]);
+      const { data: donor, error: donorError } = await db.from('donors').select('total_donated, donations_count').eq('id', tx.donor_id).maybeSingle();
+      throwIfError(donorError);
+      if (donor) {
+        const { error: donorUpdateError } = await db.from('donors').update({
+          total_donated: Math.max(0, (Number(donor.total_donated) || 0) - (Number(tx.amount) || 0)),
+          donations_count: Math.max(0, (Number(donor.donations_count) || 0) - 1)
+        }).eq('id', tx.donor_id);
+        throwIfError(donorUpdateError);
+      }
     }
 
-    await logAudit({
-      userId: req.user?.id,
-      userName: req.user?.name,
-      userRole: req.user?.role,
-      action: 'DELETE',
-      entity: 'INCOME',
-      entityId: tx.transaction_id,
-      descriptionMr: `${req.user?.name} यांनी जमा व्यवहार ${tx.transaction_id} (रक्कम ₹${tx.amount}) हटवला.`,
-      descriptionEn: `Deleted income transaction ${tx.transaction_id} (₹${tx.amount}).`,
-      oldValues: tx,
-      req
-    });
-
-    return res.json({
-      success: true,
-      message: 'व्यवहार यशस्वीरित्या हटवला / Transaction deleted successfully.'
-    });
+    await logAudit({ userId: req.user?.id, userName: req.user?.name, userRole: req.user?.role, action: 'DELETE', entity: 'INCOME', entityId: tx.transaction_id, descriptionMr: `${req.user?.name} यांनी जमा व्यवहार ${tx.transaction_id} (रक्कम ₹${tx.amount}) हटवला.`, descriptionEn: `Deleted income transaction ${tx.transaction_id} (₹${tx.amount}).`, oldValues: tx, req });
+    return res.json({ success: true, message: 'व्यवहार यशस्वीरित्या हटवला / Transaction deleted successfully.' });
   } catch (err) {
     console.error('deleteIncome error:', err);
     return res.status(500).json({ success: false, message: 'व्यवहार हटवताना त्रुटी.' });

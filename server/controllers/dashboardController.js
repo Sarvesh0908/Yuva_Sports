@@ -1,137 +1,74 @@
 import { db } from '../database/db.js';
+import { countByAndSum, istDateKey, sum, throwIfError } from '../utils/dbHelpers.js';
 
 export async function getDashboardStats(req, res) {
   try {
-    // 1. Core financial numbers
-    const incomeStats = await db.get(`
-      SELECT 
-        COALESCE(SUM(amount), 0) as total_income,
-        COUNT(id) as income_count,
-        COALESCE(SUM(CASE WHEN category = 'vargani' THEN amount ELSE 0 END), 0) as total_vargani,
-        COALESCE(SUM(CASE WHEN category = 'donation' THEN amount ELSE 0 END), 0) as total_donation,
-        COALESCE(SUM(CASE WHEN category = 'sponsorship' THEN amount ELSE 0 END), 0) as total_sponsorship,
-        COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount ELSE 0 END), 0) as cash_income,
-        COALESCE(SUM(CASE WHEN payment_method != 'cash' THEN amount ELSE 0 END), 0) as digital_income,
-        COALESCE(SUM(CASE WHEN date(created_at) = date('now') THEN amount ELSE 0 END), 0) as today_income
-      FROM income_transactions 
-      WHERE is_deleted = 0
-    `);
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
 
-    const expenseStats = await db.get(`
-      SELECT 
-        COALESCE(SUM(amount), 0) as total_expense,
-        COUNT(id) as expense_count,
-        COALESCE(SUM(CASE WHEN status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as approved_expense,
-        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_expense_amount,
-        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_expense_count,
-        COALESCE(SUM(CASE WHEN payment_method = 'cash' AND status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as cash_expense,
-        COALESCE(SUM(CASE WHEN date(created_at) = date('now') AND status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as today_expense
-      FROM expense_transactions 
-      WHERE is_deleted = 0
-    `);
+    const [incomeResult, expenseResult, donorsResult, topDonorsResult, recentIncomeResult, recentExpensesResult, eventsResult, settingsResult] = await Promise.all([
+      db.from('income_transactions').select('id, amount, category, payment_method, created_at').eq('is_deleted', false),
+      db.from('expense_transactions').select('id, amount, category, payment_method, status, created_at').eq('is_deleted', false),
+      db.from('donors').select('*', { count: 'exact', head: true }),
+      db.from('donors').select('id, name, mobile, area, total_donated, donations_count').order('total_donated', { ascending: false }).limit(6),
+      db.from('income_transactions').select('transaction_id, donor_name, amount, payment_method, category, receipt_number, created_at, status').eq('is_deleted', false).order('created_at', { ascending: false }).limit(5),
+      db.from('expense_transactions').select('expense_id, paid_to, amount, payment_method, category, bill_number, created_at, status').eq('is_deleted', false).order('created_at', { ascending: false }).limit(5),
+      db.from('events').select('id, title_mr, title_en, event_date, start_time, end_time, location, status').order('event_date', { ascending: true }).order('start_time', { ascending: true }).limit(4),
+      db.from('mandal_settings').select('*').limit(1).maybeSingle()
+    ]);
 
-    const donorsCountRow = await db.get('SELECT COUNT(*) as count FROM donors');
-    const totalDonors = donorsCountRow?.count || 0;
+    [incomeResult, expenseResult, topDonorsResult, recentIncomeResult, recentExpensesResult, eventsResult, settingsResult].forEach(r => throwIfError(r.error));
+    throwIfError(donorsResult.error);
 
-    const totalIncome = Number(incomeStats.total_income) || 0;
-    const totalExpense = Number(expenseStats.approved_expense) || 0;
-    const currentBalance = totalIncome - totalExpense;
+    const incomes = incomeResult.data || [];
+    const expenses = expenseResult.data || [];
+    const approvedExpenses = expenses.filter(e => ['approved', 'paid'].includes(e.status));
+    const pendingExpenses = expenses.filter(e => e.status === 'pending');
+    const today = istDateKey();
 
-    // 2. Payment Method Distribution
-    const paymentMethods = await db.all(`
-      SELECT payment_method, COUNT(*) as count, COALESCE(SUM(amount), 0) as total_amount
-      FROM income_transactions
-      WHERE is_deleted = 0
-      GROUP BY payment_method
-    `);
+    const totalIncome = sum(incomes);
+    const totalExpense = sum(approvedExpenses);
 
-    // 3. Expense Category Breakdown
-    const expenseCategories = await db.all(`
-      SELECT category, COUNT(*) as count, COALESCE(SUM(amount), 0) as total_amount
-      FROM expense_transactions
-      WHERE is_deleted = 0 AND status IN ('approved', 'paid')
-      GROUP BY category
-      ORDER BY total_amount DESC
-    `);
+    const paymentMethods = countByAndSum(incomes, 'payment_method').sort((a, b) => b.total_amount - a.total_amount);
+    const expenseCategories = countByAndSum(approvedExpenses, 'category').sort((a, b) => b.total_amount - a.total_amount);
+    const incomeCategories = countByAndSum(incomes, 'category').sort((a, b) => b.total_amount - a.total_amount);
 
-    // 4. Income Category Breakdown
-    const incomeCategories = await db.all(`
-      SELECT category, COUNT(*) as count, COALESCE(SUM(amount), 0) as total_amount
-      FROM income_transactions
-      WHERE is_deleted = 0
-      GROUP BY category
-      ORDER BY total_amount DESC
-    `);
+    const trendMap = new Map();
+    for (const row of incomes.filter(r => new Date(r.created_at) >= new Date(fourteenDaysAgo))) {
+      const date = istDateKey(row.created_at);
+      const current = trendMap.get(date) || { date, amount: 0, count: 0 };
+      current.amount += Number(row.amount) || 0;
+      current.count += 1;
+      trendMap.set(date, current);
+    }
+    const dailyTrend = [...trendMap.values()].sort((a, b) => a.date.localeCompare(b.date));
 
-    // 5. Daily Collection Trend (Recent 14 days)
-    const dailyTrend = await db.all(`
-      SELECT 
-        date(created_at) as date,
-        COALESCE(SUM(amount), 0) as amount,
-        COUNT(*) as count
-      FROM income_transactions
-      WHERE is_deleted = 0 AND created_at >= date('now', '-14 days')
-      GROUP BY date(created_at)
-      ORDER BY date(created_at) ASC
-    `);
+    const recentIncome = (recentIncomeResult.data || []).map(r => ({
+      type: 'income',
+      id_code: r.transaction_id,
+      party_name: r.donor_name,
+      amount: r.amount,
+      payment_method: r.payment_method,
+      category: r.category,
+      receipt_number: r.receipt_number,
+      created_at: r.created_at,
+      status: r.status
+    }));
 
-    // 6. Top Donors
-    const topDonors = await db.all(`
-      SELECT id, name, mobile, area, total_donated, donations_count
-      FROM donors
-      ORDER BY total_donated DESC
-      LIMIT 6
-    `);
-
-    // 7. Recent Transactions (combined income & expenses)
-    const recentIncome = await db.all(`
-      SELECT 
-        'income' as type,
-        transaction_id as id_code,
-        donor_name as party_name,
-        amount,
-        payment_method,
-        category,
-        receipt_number,
-        created_at,
-        status
-      FROM income_transactions
-      WHERE is_deleted = 0
-      ORDER BY created_at DESC
-      LIMIT 5
-    `);
-
-    const recentExpenses = await db.all(`
-      SELECT 
-        'expense' as type,
-        expense_id as id_code,
-        paid_to as party_name,
-        amount,
-        payment_method,
-        category,
-        bill_number as receipt_number,
-        created_at,
-        status
-      FROM expense_transactions
-      WHERE is_deleted = 0
-      ORDER BY created_at DESC
-      LIMIT 5
-    `);
+    const recentExpenses = (recentExpensesResult.data || []).map(r => ({
+      type: 'expense',
+      id_code: r.expense_id,
+      party_name: r.paid_to,
+      amount: r.amount,
+      payment_method: r.payment_method,
+      category: r.category,
+      receipt_number: r.bill_number,
+      created_at: r.created_at,
+      status: r.status
+    }));
 
     const recentTransactions = [...recentIncome, ...recentExpenses]
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       .slice(0, 8);
-
-    // 8. Upcoming Events
-    const upcomingEvents = await db.all(`
-      SELECT id, title_mr, title_en, event_date, start_time, end_time, location, status
-      FROM events
-      ORDER BY event_date ASC, start_time ASC
-      LIMIT 4
-    `);
-
-    // 9. Mandal Settings for countdown & basic info
-    const mandalSettings = await db.get('SELECT * FROM mandal_settings LIMIT 1');
 
     return res.json({
       success: true,
@@ -139,28 +76,28 @@ export async function getDashboardStats(req, res) {
         summary: {
           totalIncome,
           totalExpense,
-          currentBalance,
-          totalVargani: Number(incomeStats.total_vargani) || 0,
-          totalDonation: Number(incomeStats.total_donation) || 0,
-          totalSponsorship: Number(incomeStats.total_sponsorship) || 0,
-          totalDonors,
-          totalTransactions: (incomeStats.income_count || 0) + (expenseStats.expense_count || 0),
-          todayCollection: Number(incomeStats.today_income) || 0,
-          todayExpense: Number(expenseStats.today_expense) || 0,
-          pendingExpensesCount: expenseStats.pending_expense_count || 0,
-          pendingExpensesAmount: Number(expenseStats.pending_expense_amount) || 0,
-          cashIncome: Number(incomeStats.cash_income) || 0,
-          digitalIncome: Number(incomeStats.digital_income) || 0,
-          cashExpense: Number(expenseStats.cash_expense) || 0
+          currentBalance: totalIncome - totalExpense,
+          totalVargani: sum(incomes.filter(r => r.category === 'vargani')),
+          totalDonation: sum(incomes.filter(r => r.category === 'donation')),
+          totalSponsorship: sum(incomes.filter(r => r.category === 'sponsorship')),
+          totalDonors: donorsResult.count || 0,
+          totalTransactions: incomes.length + expenses.length,
+          todayCollection: sum(incomes.filter(r => istDateKey(r.created_at) === today)),
+          todayExpense: sum(approvedExpenses.filter(r => istDateKey(r.created_at) === today)),
+          pendingExpensesCount: pendingExpenses.length,
+          pendingExpensesAmount: sum(pendingExpenses),
+          cashIncome: sum(incomes.filter(r => r.payment_method === 'cash')),
+          digitalIncome: sum(incomes.filter(r => r.payment_method !== 'cash')),
+          cashExpense: sum(approvedExpenses.filter(r => r.payment_method === 'cash'))
         },
         paymentMethods,
         expenseCategories,
         incomeCategories,
         dailyTrend,
-        topDonors,
+        topDonors: topDonorsResult.data || [],
         recentTransactions,
-        upcomingEvents,
-        mandalSettings
+        upcomingEvents: eventsResult.data || [],
+        mandalSettings: settingsResult.data || null
       }
     });
   } catch (err) {

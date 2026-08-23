@@ -1,85 +1,52 @@
 import { db } from '../database/db.js';
 import { logAudit } from '../middleware/auditMiddleware.js';
+import { uploadFileToSupabase } from '../middleware/uploadMiddleware.js';
+import { istDayBounds, safeSearchTerm, sum, throwIfError } from '../utils/dbHelpers.js';
+
+function applyExpenseFilters(query, filters) {
+  const { search, category, status, payment_method, startDate, endDate } = filters;
+  if (search) {
+    const s = safeSearchTerm(search);
+    query = query.or(`description.ilike.%${s}%,paid_to.ilike.%${s}%,bill_number.ilike.%${s}%,expense_id.ilike.%${s}%`);
+  }
+  if (category) query = query.eq('category', category);
+  if (status) query = query.eq('status', status);
+  if (payment_method) query = query.eq('payment_method', payment_method);
+  if (startDate) query = query.gte('created_at', istDayBounds(startDate).start);
+  if (endDate) query = query.lt('created_at', istDayBounds(endDate).end);
+  return query;
+}
 
 export async function getExpenseList(req, res) {
   try {
-    const {
-      page = 1,
-      limit = 20,
-      search = '',
-      category = '',
-      status = '',
-      payment_method = '',
-      startDate = '',
-      endDate = ''
-    } = req.query;
+    const filters = {
+      search: req.query.search || '',
+      category: req.query.category || '',
+      status: req.query.status || '',
+      payment_method: req.query.payment_method || '',
+      startDate: req.query.startDate || '',
+      endDate: req.query.endDate || ''
+    };
+    const pageNum = Math.max(1, Number(req.query.page) || 1);
+    const limitNum = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const offset = (pageNum - 1) * limitNum;
 
-    const offset = (Number(page) - 1) * Number(limit);
-    let whereConditions = ['is_deleted = 0'];
-    let params = [];
+    let pageQuery = db.from('expense_transactions').select('*', { count: 'exact' }).eq('is_deleted', false).order('created_at', { ascending: false });
+    pageQuery = applyExpenseFilters(pageQuery, filters);
+    const { data: expenses, count, error } = await pageQuery.range(offset, offset + limitNum - 1);
+    throwIfError(error);
 
-    if (search) {
-      whereConditions.push('(description LIKE ? OR paid_to LIKE ? OR bill_number LIKE ? OR expense_id LIKE ?)');
-      const s = `%${search.trim()}%`;
-      params.push(s, s, s, s);
-    }
+    let summaryQuery = db.from('expense_transactions').select('amount, status').eq('is_deleted', false);
+    summaryQuery = applyExpenseFilters(summaryQuery, filters);
+    const { data: summaryRows, error: summaryError } = await summaryQuery;
+    throwIfError(summaryError);
 
-    if (category) {
-      whereConditions.push('category = ?');
-      params.push(category);
-    }
+    const rows = summaryRows || [];
+    const approved = rows.filter(r => ['approved', 'paid'].includes(r.status));
+    const pending = rows.filter(r => r.status === 'pending');
+    const total = count || 0;
 
-    if (status) {
-      whereConditions.push('status = ?');
-      params.push(status);
-    }
-
-    if (payment_method) {
-      whereConditions.push('payment_method = ?');
-      params.push(payment_method);
-    }
-
-    if (startDate) {
-      whereConditions.push('date(created_at) >= date(?)');
-      params.push(startDate);
-    }
-
-    if (endDate) {
-      whereConditions.push('date(created_at) <= date(?)');
-      params.push(endDate);
-    }
-
-    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
-
-    const countRow = await db.get(
-      `SELECT COUNT(*) as total, COALESCE(SUM(amount), 0) as total_amount,
-        COALESCE(SUM(CASE WHEN status IN ('approved', 'paid') THEN amount ELSE 0 END), 0) as approved_amount,
-        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_amount
-       FROM expense_transactions ${whereClause}`,
-      params
-    );
-
-    const expenses = await db.all(
-      `SELECT * FROM expense_transactions ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...params, Number(limit), offset]
-    );
-
-    return res.json({
-      success: true,
-      data: expenses,
-      summary: {
-        total: countRow.total,
-        totalAmount: countRow.total_amount,
-        approvedAmount: countRow.approved_amount,
-        pendingAmount: countRow.pending_amount
-      },
-      pagination: {
-        total: countRow.total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(countRow.total / Number(limit)) || 1
-      }
-    });
+    return res.json({ success: true, data: expenses || [], summary: { total, totalAmount: sum(rows), approvedAmount: sum(approved), pendingAmount: sum(pending) }, pagination: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) || 1 } });
   } catch (err) {
     console.error('getExpenseList error:', err);
     return res.status(500).json({ success: false, message: 'खर्च यादी मिळवताना त्रुटी' });
@@ -88,97 +55,59 @@ export async function getExpenseList(req, res) {
 
 export async function createExpense(req, res) {
   try {
-    const {
-      category,
-      description,
-      amount,
-      payment_method = 'cash',
-      paid_to,
-      bill_number = '',
-      notes = '',
-      status: requestedStatus
-    } = req.body;
-
+    const { category, description, amount, payment_method = 'cash', paid_to, bill_number = '', notes = '', status: requestedStatus } = req.body;
     const parsedAmount = Number(amount);
-    if (!description || !description.trim()) {
-      return res.status(400).json({ success: false, message: 'खर्चाचे वर्णन आवश्यक आहे.' });
-    }
+    if (!description?.trim()) return res.status(400).json({ success: false, message: 'खर्चाचे वर्णन आवश्यक आहे.' });
+    if (!paid_to?.trim()) return res.status(400).json({ success: false, message: 'कोणाला पैसे दिले ते नाव आवश्यक आहे.' });
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return res.status(400).json({ success: false, message: 'कृपया वैध रक्कम भरा (Amount must be > 0).' });
+    if (!category) return res.status(400).json({ success: false, message: 'खर्चाचा प्रवर्ग आवश्यक आहे / Expense category is required.' });
 
-    if (!paid_to || !paid_to.trim()) {
-      return res.status(400).json({ success: false, message: 'कोणाला पैसे दिले ते नाव आवश्यक आहे.' });
-    }
-
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({ success: false, message: 'कृपया वैध रक्कम भरा (Amount must be > 0).' });
-    }
-
-    // Role-based default status
     const isApprover = ['admin', 'treasurer'].includes(req.user?.role);
     let status = 'pending';
     let approvedByName = null;
     let approvedById = null;
     let approvedAt = null;
-
     if (isApprover) {
       status = requestedStatus && ['approved', 'paid', 'pending'].includes(requestedStatus) ? requestedStatus : 'approved';
-      if (status === 'approved' || status === 'paid') {
+      if (['approved', 'paid'].includes(status)) {
         approvedByName = req.user.name;
         approvedById = req.user.id;
         approvedAt = new Date().toISOString();
       }
     }
 
-    const countRow = await db.get('SELECT COUNT(*) as count FROM expense_transactions');
-    const nextNum = (countRow.count || 0) + 1;
-    const formattedNum = String(nextNum).padStart(5, '0');
-    const expenseId = `EXP-2026-${formattedNum}`;
-    const billAttachmentUrl = req.file ? `/uploads/${req.file.filename}` : '';
+    const { count, error: countError } = await db.from('expense_transactions').select('*', { count: 'exact', head: true });
+    throwIfError(countError);
+    const expenseId = `EXP-2026-${String((count || 0) + 1).padStart(5, '0')}`;
+    const billAttachmentUrl = req.file ? await uploadFileToSupabase(req.file, 'expenses') : '';
 
-    const expRes = await db.run(`
-      INSERT INTO expense_transactions (
-        expense_id, category, description, amount, payment_method, paid_to,
-        bill_number, bill_attachment_url, status, requested_by_id, requested_by_name,
-        approved_by_id, approved_by_name, approved_at, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      expenseId, category, description.trim(), parsedAmount, payment_method, paid_to.trim(),
-      bill_number ? bill_number.trim() : '', billAttachmentUrl, status,
-      req.user?.id, req.user?.name, approvedById, approvedByName, approvedAt, notes ? notes.trim() : ''
-    ]);
+    const { data: createdExpense, error } = await db.from('expense_transactions').insert({
+      expense_id: expenseId,
+      category,
+      description: description.trim(),
+      amount: parsedAmount,
+      payment_method,
+      paid_to: paid_to.trim(),
+      bill_number: bill_number.trim(),
+      bill_attachment_url: billAttachmentUrl,
+      status,
+      requested_by_id: req.user?.id,
+      requested_by_name: req.user?.name,
+      approved_by_id: approvedById,
+      approved_by_name: approvedByName,
+      approved_at: approvedAt,
+      notes: notes.trim()
+    }).select('*').single();
+    throwIfError(error);
 
-    const createdExpense = await db.get('SELECT * FROM expense_transactions WHERE id = ?', [expRes.lastID]);
-
-    // If status is pending, create a notification for admin/treasurer
     if (status === 'pending') {
-      await db.run(`
-        INSERT INTO notifications (user_id, title_mr, title_en, message_mr, message_en, type, link)
-        VALUES (NULL, 'नवीन खर्च मंजुरीसाठी प्रलंबित', 'Expense Pending Approval', ?, ?, 'warning', '/approvals')
-      `, [
-        `${req.user?.name} यांनी ₹${parsedAmount.toLocaleString('en-IN')} खर्चाची नोंद केली (${description.trim()}). मंजुरी बाकी आहे.`,
-        `${req.user?.name} recorded expense of ₹${parsedAmount.toLocaleString('en-IN')} (${description.trim()}). Pending approval.`
-      ]);
+      const { error: notificationError } = await db.from('notifications').insert({ user_id: null, title_mr: 'नवीन खर्च मंजुरीसाठी प्रलंबित', title_en: 'Expense Pending Approval', message_mr: `${req.user?.name} यांनी ₹${parsedAmount.toLocaleString('en-IN')} खर्चाची नोंद केली (${description.trim()}). मंजुरी बाकी आहे.`, message_en: `${req.user?.name} recorded expense of ₹${parsedAmount.toLocaleString('en-IN')} (${description.trim()}). Pending approval.`, type: 'warning', link: '/approvals' });
+      throwIfError(notificationError);
     }
 
-    await logAudit({
-      userId: req.user?.id,
-      userName: req.user?.name,
-      userRole: req.user?.role,
-      action: 'CREATE',
-      entity: 'EXPENSE',
-      entityId: expenseId,
-      descriptionMr: `${req.user?.name} यांनी ₹${parsedAmount.toLocaleString('en-IN')} खर्च नोंदवला (${description.trim()}). स्थिती: ${status}.`,
-      descriptionEn: `Created expense ${expenseId} of ₹${parsedAmount.toLocaleString('en-IN')}. Status: ${status}.`,
-      newValues: createdExpense,
-      req
-    });
+    await logAudit({ userId: req.user?.id, userName: req.user?.name, userRole: req.user?.role, action: 'CREATE', entity: 'EXPENSE', entityId: expenseId, descriptionMr: `${req.user?.name} यांनी ₹${parsedAmount.toLocaleString('en-IN')} खर्च नोंदवला (${description.trim()}). स्थिती: ${status}.`, descriptionEn: `Created expense ${expenseId} of ₹${parsedAmount.toLocaleString('en-IN')}. Status: ${status}.`, newValues: createdExpense, req });
 
-    return res.status(201).json({
-      success: true,
-      message: status === 'pending'
-        ? 'खर्च यशस्वीरित्या नोंदवला व मंजुरीसाठी पाठवला आहे / Expense recorded and sent for approval.'
-        : 'खर्च यशस्वीरित्या नोंदवला व मंजूर झाला / Expense recorded and approved.',
-      data: createdExpense
-    });
+    return res.status(201).json({ success: true, message: status === 'pending' ? 'खर्च यशस्वीरित्या नोंदवला व मंजुरीसाठी पाठवला आहे / Expense recorded and sent for approval.' : 'खर्च यशस्वीरित्या नोंदवला व मंजूर झाला / Expense recorded and approved.', data: createdExpense });
   } catch (err) {
     console.error('createExpense error:', err);
     return res.status(500).json({ success: false, message: 'खर्च नोंदवताना त्रुटी निर्माण झाली.' });
@@ -188,45 +117,18 @@ export async function createExpense(req, res) {
 export async function approveExpense(req, res) {
   try {
     const { id } = req.params;
-    const { notes } = req.body;
+    const notes = req.body.notes?.trim() || '';
+    const { data: expense, error } = await db.from('expense_transactions').select('*').eq('id', id).eq('is_deleted', false).maybeSingle();
+    throwIfError(error);
+    if (!expense) return res.status(404).json({ success: false, message: 'खर्च व्यवहार सापडला नाही.' });
 
-    const expense = await db.get('SELECT * FROM expense_transactions WHERE id = ? AND is_deleted = 0', [id]);
-    if (!expense) {
-      return res.status(404).json({ success: false, message: 'खर्च व्यवहार सापडला नाही.' });
-    }
+    const update = { status: 'approved', approved_by_id: req.user.id, approved_by_name: req.user.name, approved_at: new Date().toISOString() };
+    if (notes) update.notes = notes;
+    const { data: updated, error: updateError } = await db.from('expense_transactions').update(update).eq('id', id).select('*').single();
+    throwIfError(updateError);
 
-    await db.run(`
-      UPDATE expense_transactions 
-      SET status = 'approved',
-          approved_by_id = ?,
-          approved_by_name = ?,
-          approved_at = CURRENT_TIMESTAMP,
-          notes = CASE WHEN ? != '' THEN ? ELSE notes END,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [req.user.id, req.user.name, notes ? notes.trim() : '', notes ? notes.trim() : '', id]);
-
-    const updated = await db.get('SELECT * FROM expense_transactions WHERE id = ?', [id]);
-
-    await logAudit({
-      userId: req.user.id,
-      userName: req.user.name,
-      userRole: req.user.role,
-      action: 'APPROVE',
-      entity: 'EXPENSE',
-      entityId: expense.expense_id,
-      descriptionMr: `${req.user.name} यांनी खर्च ${expense.expense_id} (रक्कम ₹${expense.amount}) मंजूर केला.`,
-      descriptionEn: `Approved expense ${expense.expense_id} (₹${expense.amount}).`,
-      oldValues: { status: expense.status },
-      newValues: { status: 'approved' },
-      req
-    });
-
-    return res.json({
-      success: true,
-      message: 'खर्च यशस्वीरित्या मंजूर करण्यात आला / Expense approved successfully.',
-      data: updated
-    });
+    await logAudit({ userId: req.user.id, userName: req.user.name, userRole: req.user.role, action: 'APPROVE', entity: 'EXPENSE', entityId: expense.expense_id, descriptionMr: `${req.user.name} यांनी खर्च ${expense.expense_id} (रक्कम ₹${expense.amount}) मंजूर केला.`, descriptionEn: `Approved expense ${expense.expense_id} (₹${expense.amount}).`, oldValues: { status: expense.status }, newValues: { status: 'approved' }, req });
+    return res.json({ success: true, message: 'खर्च यशस्वीरित्या मंजूर करण्यात आला / Expense approved successfully.', data: updated });
   } catch (err) {
     console.error('approveExpense error:', err);
     return res.status(500).json({ success: false, message: 'खर्च मंजूर करताना त्रुटी.' });
@@ -236,39 +138,17 @@ export async function approveExpense(req, res) {
 export async function rejectExpense(req, res) {
   try {
     const { id } = req.params;
-    const { reason = '' } = req.body;
+    const reason = req.body.reason?.trim() || 'नाही';
+    const { data: expense, error } = await db.from('expense_transactions').select('*').eq('id', id).eq('is_deleted', false).maybeSingle();
+    throwIfError(error);
+    if (!expense) return res.status(404).json({ success: false, message: 'खर्च व्यवहार सापडला नाही.' });
 
-    const expense = await db.get('SELECT * FROM expense_transactions WHERE id = ? AND is_deleted = 0', [id]);
-    if (!expense) {
-      return res.status(404).json({ success: false, message: 'खर्च व्यवहार सापडला नाही.' });
-    }
+    const notes = `${expense.notes ? `${expense.notes} | ` : ''}नामंजूर करण्याचे कारण: ${reason}`;
+    const { error: updateError } = await db.from('expense_transactions').update({ status: 'rejected', notes }).eq('id', id);
+    throwIfError(updateError);
 
-    await db.run(`
-      UPDATE expense_transactions 
-      SET status = 'rejected',
-          notes = COALESCE(notes || ' | ', '') || 'नामंजूर करण्याचे कारण: ' || ?,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [reason.trim() || 'नाही', id]);
-
-    await logAudit({
-      userId: req.user.id,
-      userName: req.user.name,
-      userRole: req.user.role,
-      action: 'REJECT',
-      entity: 'EXPENSE',
-      entityId: expense.expense_id,
-      descriptionMr: `${req.user.name} यांनी खर्च ${expense.expense_id} नामंजूर केला. कारण: ${reason}`,
-      descriptionEn: `Rejected expense ${expense.expense_id}. Reason: ${reason}`,
-      oldValues: { status: expense.status },
-      newValues: { status: 'rejected', reason },
-      req
-    });
-
-    return res.json({
-      success: true,
-      message: 'खर्च नामंजूर करण्यात आला / Expense rejected.'
-    });
+    await logAudit({ userId: req.user.id, userName: req.user.name, userRole: req.user.role, action: 'REJECT', entity: 'EXPENSE', entityId: expense.expense_id, descriptionMr: `${req.user.name} यांनी खर्च ${expense.expense_id} नामंजूर केला. कारण: ${reason}`, descriptionEn: `Rejected expense ${expense.expense_id}. Reason: ${reason}`, oldValues: { status: expense.status }, newValues: { status: 'rejected', reason }, req });
+    return res.json({ success: true, message: 'खर्च नामंजूर करण्यात आला / Expense rejected.' });
   } catch (err) {
     console.error('rejectExpense error:', err);
     return res.status(500).json({ success: false, message: 'खर्च नामंजूर करताना त्रुटी.' });
@@ -278,30 +158,14 @@ export async function rejectExpense(req, res) {
 export async function deleteExpense(req, res) {
   try {
     const { id } = req.params;
-    const expense = await db.get('SELECT * FROM expense_transactions WHERE id = ? AND is_deleted = 0', [id]);
-    if (!expense) {
-      return res.status(404).json({ success: false, message: 'खर्च व्यवहार सापडला नाही.' });
-    }
+    const { data: expense, error } = await db.from('expense_transactions').select('*').eq('id', id).eq('is_deleted', false).maybeSingle();
+    throwIfError(error);
+    if (!expense) return res.status(404).json({ success: false, message: 'खर्च व्यवहार सापडला नाही.' });
 
-    await db.run('UPDATE expense_transactions SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
-
-    await logAudit({
-      userId: req.user.id,
-      userName: req.user.name,
-      userRole: req.user.role,
-      action: 'DELETE',
-      entity: 'EXPENSE',
-      entityId: expense.expense_id,
-      descriptionMr: `${req.user.name} यांनी खर्च व्यवहार ${expense.expense_id} हटवला.`,
-      descriptionEn: `Deleted expense transaction ${expense.expense_id}.`,
-      oldValues: expense,
-      req
-    });
-
-    return res.json({
-      success: true,
-      message: 'खर्च यशस्वीरित्या हटवला / Expense deleted successfully.'
-    });
+    const { error: updateError } = await db.from('expense_transactions').update({ is_deleted: true }).eq('id', id);
+    throwIfError(updateError);
+    await logAudit({ userId: req.user.id, userName: req.user.name, userRole: req.user.role, action: 'DELETE', entity: 'EXPENSE', entityId: expense.expense_id, descriptionMr: `${req.user.name} यांनी खर्च व्यवहार ${expense.expense_id} हटवला.`, descriptionEn: `Deleted expense transaction ${expense.expense_id}.`, oldValues: expense, req });
+    return res.json({ success: true, message: 'खर्च यशस्वीरित्या हटवला / Expense deleted successfully.' });
   } catch (err) {
     console.error('deleteExpense error:', err);
     return res.status(500).json({ success: false, message: 'खर्च हटवताना त्रुटी.' });
