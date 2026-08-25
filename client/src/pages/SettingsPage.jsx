@@ -290,7 +290,7 @@ export function SettingsPage() {
                 name="upi_name"
                 value={formData.upi_name}
                 onChange={handleChange}
-                placeholder="Shree Ganesh Mitra Mandal Trust"
+                placeholder="yuva sports ganeshotsav mandal, dattawad"
                 className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs outline-none focus:ring-2 focus:ring-amber-500"
               />
             </div>

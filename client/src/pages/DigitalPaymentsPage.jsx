@@ -26,8 +26,8 @@ export function DigitalPaymentsPage() {
   const [note, setNote] = useState('श्री गणेशोत्सव देणगी');
   const [isCopied, setIsCopied] = useState(false);
 
-  const upiId = mandal?.upi_id || 'ganeshmandal@sbi';
-  const upiName = mandal?.upi_name || 'Shree Ganesh Mitra Mandal Trust';
+  const upiId = mandal?.upi_id || 'sarveshkharoshe8-2@okaxis';
+  const upiName = mandal?.upi_name || 'yuva sports ganeshotsav mandal, dattawad';
 
   const upiUri = amount > 0
     ? `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&am=${amount}&cu=INR&tn=${encodeURIComponent(note)}`

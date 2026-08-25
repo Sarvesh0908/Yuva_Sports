@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS mandal_settings (
   address_mr TEXT DEFAULT 'युवा स्पोर्ट्स चौक, दत्तवाड | ४१६१०७ , महाराष्ट्र |',
   address_en TEXT DEFAULT 'Yuva Sports Chowk, Dattawad | 416107, Maharashtra |',
   contact_phone TEXT DEFAULT '+91 9699049637',
-  contact_email TEXT DEFAULT 'sarveshkharoshe8-2@okaxis.com',
+  contact_email TEXT DEFAULT 'sarveshkharoshe8@gmail.com',
   registration_no TEXT DEFAULT '-',
   festival_year INTEGER DEFAULT 2026,
   arrival_date TEXT DEFAULT '2026-09-14T09:00:00',
