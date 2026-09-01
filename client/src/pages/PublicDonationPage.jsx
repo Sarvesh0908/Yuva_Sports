@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { GanpatiLogo } from '../components/common/GanpatiLogo';
 import { formatCurrency } from '../utils/formatCurrency';
+import { API_BASE_URL } from '../services/api';
 import {
   HeartHandshake,
   QrCode,
@@ -33,7 +34,7 @@ export function PublicDonationPage() {
   useEffect(() => {
     async function fetchPublicData() {
       try {
-        const res = await fetch('/api/public/donation-info');
+        const res = await fetch(`${API_BASE_URL}/public/donation-info`);
         const json = await res.json();
         if (json.success && json.data) {
           setMandalInfo(json.data.mandal);
@@ -68,7 +69,7 @@ export function PublicDonationPage() {
 
     try {
       setIsSubmitting(true);
-      const res = await fetch('/api/public/donate', {
+      const res = await fetch(`${API_BASE_URL}/public/donate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

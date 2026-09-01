@@ -1,4 +1,8 @@
-const BASE_URL = 'https://yuva-sports.onrender.com/api';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || (
+  typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://localhost:5000/api'
+    : 'https://yuva-sports.onrender.com/api'
+);
 
 export async function request(endpoint, options = {}) {
   const token = localStorage.getItem('ganpati_mandal_token');
@@ -22,7 +26,7 @@ export async function request(endpoint, options = {}) {
   };
 
   try {
-    const response = await fetch(`${BASE_URL}${endpoint}`, config);
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
 
     // Handle unauthorized / expired token
     if (response.status === 401 && !endpoint.includes('/auth/login')) {

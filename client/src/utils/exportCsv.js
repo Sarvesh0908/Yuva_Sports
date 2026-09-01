@@ -1,10 +1,12 @@
+import { API_BASE_URL } from '../services/api';
+
 /**
  * Utility to download CSV reports with JWT authentication and proper MIME handling.
  * Ensures downloaded files are always valid .csv format with UTF-8 encoding.
  */
 export async function downloadCsvReport(type = 'income', customFilename = null) {
   const token = localStorage.getItem('ganpati_mandal_token');
-  const url = `/api/reports/export/${type}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  const url = `${API_BASE_URL}/reports/export/${type}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   
   const response = await fetch(url, {
     method: 'GET',

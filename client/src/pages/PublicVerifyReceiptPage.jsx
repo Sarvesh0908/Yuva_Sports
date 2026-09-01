@@ -4,6 +4,7 @@ import { formatCurrency } from '../utils/formatCurrency';
 import { formatDate } from '../utils/dateUtils';
 import { GanpatiLogo } from '../components/common/GanpatiLogo';
 import { ReceiptModal } from '../components/receipt/ReceiptModal';
+import { API_BASE_URL } from '../services/api';
 import {
   CheckCircle2,
   XCircle,
@@ -34,7 +35,7 @@ export function PublicVerifyReceiptPage() {
       setError('');
       setData(null);
 
-      const res = await fetch(`/api/public/verify-receipt/${encodeURIComponent(codeToVerify.trim())}`);
+      const res = await fetch(`${API_BASE_URL}/public/verify-receipt/${encodeURIComponent(codeToVerify.trim())}`);
       const json = await res.json();
 
       if (res.ok && json.valid && json.data) {
