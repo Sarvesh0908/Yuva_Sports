@@ -23,6 +23,7 @@ const router = express.Router();
 router.post('/auth/login', authController.login);
 router.post('/auth/register', authController.register);
 router.get('/public/verify-receipt/:identifier', receiptController.verifyPublicReceipt);
+router.get('/receipts/number/:receiptNumber', receiptController.getReceiptByNumber);
 router.get('/public/donation-info', publicController.getPublicDonationInfo);
 router.post('/public/donate', publicController.submitOnlineDonationIntent);
 

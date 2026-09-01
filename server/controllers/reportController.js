@@ -135,9 +135,14 @@ export async function exportCsvData(req, res) {
       query = db.from('expense_transactions').select(columns.join(',')).eq('is_deleted', false).order('created_at', { ascending: false });
     } else if (type === 'donors') {
       columns = ['id', 'name', 'mobile', 'email', 'area', 'address', 'total_donated', 'donations_count', 'last_donated_at'];
-      headers = 'Donor ID,Name,Mobile,Email,Area,Address,Total Donated,Donations Count,Last Donated Date\n';
+      headers = 'Donor ID,Name,Mobile,Email,Area,Address,Total Donated (₹),Donations Count,Last Donated Date\n';
       filename = 'ganpati_mandal_donors.csv';
       query = db.from('donors').select(columns.join(',')).order('total_donated', { ascending: false });
+    } else if (type === 'members') {
+      columns = ['id', 'name', 'role_title_mr', 'role_title_en', 'mobile', 'address', 'blood_group', 'joining_year', 'created_at'];
+      headers = 'ID,नाव (Name),पद (मराठी),Designation (EN),मोबाईल (Mobile),पत्ता (Address),रक्तगट (Blood Group),वर्ष (Year),नोंदणी दिनांक\n';
+      filename = 'ganpati_mandal_members.csv';
+      query = db.from('committee_members').select(columns.join(',')).order('display_order', { ascending: true });
     } else {
       return res.status(400).json({ success: false, message: 'अवैध एक्सपोर्ट प्रकार.' });
     }

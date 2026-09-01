@@ -4,6 +4,7 @@ import { useNotification } from '../context/NotificationContext';
 import api from '../services/api';
 import { formatCurrency } from '../utils/formatCurrency';
 import { formatDate } from '../utils/dateUtils';
+import { downloadCsvReport } from '../utils/exportCsv';
 import { Modal } from '../components/common/Modal';
 import { ReceiptModal } from '../components/receipt/ReceiptModal';
 import {
@@ -135,14 +136,21 @@ export function DonorsPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <a
-            href="/api/reports/export/donors"
-            download
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-50 transition-colors shadow-sm"
+          <button
+            onClick={async () => {
+              try {
+                showToast('देणगीदार CSV डाऊनलोड होत आहे...', 'info');
+                await downloadCsvReport('donors');
+                showToast('देणगीदार CSV यशस्वीरित्या डाऊनलोड झाला!', 'success');
+              } catch (err) {
+                showToast(err.message || 'डाऊनलोड करताना त्रुटी.', 'error');
+              }
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm"
           >
-            <Download className="w-3.5 h-3.5" />
+            <Download className="w-3.5 h-3.5 text-blue-600" />
             <span>CSV एक्सेल</span>
-          </a>
+          </button>
 
           <button
             onClick={() => setShowAddModal(true)}

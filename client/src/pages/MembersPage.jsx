@@ -3,6 +3,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { useNotification } from '../context/NotificationContext';
 import api from '../services/api';
+import { downloadCsvReport } from '../utils/exportCsv';
 import { Modal } from '../components/common/Modal';
 import {
   UserCheck,
@@ -14,7 +15,8 @@ import {
   Edit2,
   Trash2,
   ShieldCheck,
-  User
+  User,
+  Download
 } from 'lucide-react';
 
 export function MembersPage() {
@@ -149,15 +151,33 @@ export function MembersPage() {
           </p>
         </div>
 
-        {(isAdmin || isSecretary) && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={handleOpenAdd}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 text-white font-bold text-xs sm:text-sm shadow-festive hover:from-orange-500 hover:to-amber-500 transition-all"
+            onClick={async () => {
+              try {
+                showToast('सदस्य CSV डाऊनलोड होत आहे...', 'info');
+                await downloadCsvReport('members');
+                showToast('सदस्य CSV यशस्वीरित्या डाऊनलोड झाला!', 'success');
+              } catch (err) {
+                showToast(err.message || 'डाऊनलोड करताना त्रुटी.', 'error');
+              }
+            }}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors shadow-sm"
           >
-            <PlusCircle className="w-4 h-4" />
-            <span>+ नवीन सदस्य जोडा</span>
+            <Download className="w-3.5 h-3.5 text-amber-600" />
+            <span>CSV एक्सेल</span>
           </button>
-        )}
+
+          {(isAdmin || isSecretary) && (
+            <button
+              onClick={handleOpenAdd}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-amber-600 text-white font-bold text-xs sm:text-sm shadow-festive hover:from-orange-500 hover:to-amber-500 transition-all"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>+ नवीन सदस्य जोडा</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Members Grid */}

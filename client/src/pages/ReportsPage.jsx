@@ -5,6 +5,7 @@ import { useNotification } from '../context/NotificationContext';
 import api from '../services/api';
 import { formatCurrency } from '../utils/formatCurrency';
 import { formatDate } from '../utils/dateUtils';
+import { downloadCsvReport } from '../utils/exportCsv';
 import { Badge } from '../components/common/Badge';
 import {
   FileSpreadsheet,
@@ -68,38 +69,11 @@ export function ReportsPage() {
       setShowExportMenu(false);
       showToast('CSV अहवाल तयार होत आहे...', 'info');
 
-      const token = localStorage.getItem('ganpati_mandal_token');
-      const response = await fetch(`/api/reports/export/${type}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error('CSV डाऊनलोड करताना त्रुटी आली.');
-      }
-
-      const blob = await response.blob();
-      const filenameMap = {
-        balance_sheet: 'ganpati_mandal_balance_sheet.csv',
-        income: 'ganpati_mandal_income_transactions.csv',
-        expenses: 'ganpati_mandal_expense_transactions.csv',
-        donors: 'ganpati_mandal_donors_list.csv'
-      };
-
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filenameMap[type] || `mandal_report_${type}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-
+      await downloadCsvReport(type);
       showToast('CSV अहवाल यशस्वीरित्या डाऊनलोड झाला! 📊', 'success');
     } catch (err) {
       console.error('handleExportCsv error:', err);
-      showToast('CSV डाऊनलोड करताना अडचण आली.', 'error');
+      showToast(err.message || 'CSV डाऊनलोड करताना अडचण आली.', 'error');
     } finally {
       setIsExporting(false);
     }

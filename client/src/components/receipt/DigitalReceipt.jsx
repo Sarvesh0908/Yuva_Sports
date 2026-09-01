@@ -2,6 +2,7 @@ import React from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { formatCurrency } from '../../utils/formatCurrency';
 import { formatDate } from '../../utils/dateUtils';
+import { numberToWordsMarathi } from '../../utils/marathiNumberToWords';
 import { useLanguage } from '../../context/LanguageContext';
 import logoImg from '../../assets/logo.png';
 
@@ -136,7 +137,7 @@ export function DigitalReceipt({ receipt, mandal, receiptRef }) {
         <div className="border-b border-dashed border-slate-200 pb-2 text-xs">
           <span className="text-slate-500 font-medium">अक्षरी रक्कम (In Words): </span>
           <span className="font-bold text-slate-800 block sm:inline mt-0.5 sm:mt-0 font-marathi">
-            {receipt.amount_in_words_mr || receipt.amount_in_words_en}
+            {receipt.amount_in_words_mr || receipt.amount_in_words_en || (receipt.amount ? numberToWordsMarathi(receipt.amount) : '')}
           </span>
         </div>
 
